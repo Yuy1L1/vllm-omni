@@ -273,6 +273,7 @@ class AsyncOmniEngine(OmniEngineBase):
         resumable: bool = False,
         message_type: Literal["add_request", "streaming_update"] = "add_request",
         yield_stage_id: int | None = None,
+        requested_replica_id: int | None = None,
     ) -> StageSubmissionMessage:
         """Build an add_request message after stage-0 preprocessing."""
         request_timestamp = float(arrival_time) if arrival_time is not None else time.time()
@@ -423,6 +424,7 @@ class AsyncOmniEngine(OmniEngineBase):
             enqueue_ts=time.perf_counter(),
             request_artifact_dirs=request_artifact_dirs or None,
             yield_stage_id=yield_stage_id,
+            requested_replica_id=requested_replica_id,
         )
 
     def _build_cfg_companions(
@@ -543,6 +545,7 @@ class AsyncOmniEngine(OmniEngineBase):
         kv_hints: KvHintsEnvelope | None = None,
         resumable: bool = False,
         yield_stage_id: int | None = None,
+        requested_replica_id: int | None = None,
     ) -> None:
         """Process stage-0 input locally, then send to the Orchestrator.
 
@@ -568,6 +571,7 @@ class AsyncOmniEngine(OmniEngineBase):
                 reasoning_ended=reasoning_ended,
                 resumable=resumable,
                 yield_stage_id=yield_stage_id,
+                requested_replica_id=requested_replica_id,
                 **({"kv_hints": kv_hints} if kv_hints is not None else {}),
             )
         except BaseException:
@@ -628,6 +632,7 @@ class AsyncOmniEngine(OmniEngineBase):
         kv_hints: KvHintsEnvelope | None = None,
         resumable: bool = False,
         yield_stage_id: int | None = None,
+        requested_replica_id: int | None = None,
     ) -> None:
         """Async add_request API."""
         self.add_request(
@@ -646,6 +651,7 @@ class AsyncOmniEngine(OmniEngineBase):
             reasoning_ended=reasoning_ended,
             resumable=resumable,
             yield_stage_id=yield_stage_id,
+            requested_replica_id=requested_replica_id,
             **({"kv_hints": kv_hints} if kv_hints is not None else {}),
         )
 

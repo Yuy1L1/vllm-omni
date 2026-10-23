@@ -86,7 +86,10 @@ class ServingRun:
             to_sampling_params_list(self.engine_client, request.sampling_params or []), is_streaming=False
         )
         return await self.engine_client.run_entry_stage(
-            request.stage_input, sampling_params_list, request_id=request_id
+            request.stage_input,
+            sampling_params_list,
+            request_id=request_id,
+            requested_replica_id=request.replica_id,
         )
 
     async def _run_downstream_stage(
@@ -102,7 +105,11 @@ class ServingRun:
             raise OmniClientError(
                 f"stage_input is for stage {stage_input.receiver_stage_id}, not stage {request.stage_id}"
             )
-        return await self.engine_client.run_downstream_stage(stage_input, request_id=request_id)
+        return await self.engine_client.run_downstream_stage(
+            stage_input,
+            request_id=request_id,
+            requested_replica_id=request.replica_id,
+        )
 
     @staticmethod
     def _build_stage_response(response: NextStageInputMessage | OutputMessage) -> RunResponse:

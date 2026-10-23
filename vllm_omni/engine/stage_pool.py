@@ -31,6 +31,7 @@ from vllm_omni.engine.stage_client import (
     StagePoolDiffusionClient,
     StagePoolLLMClient,
 )
+from vllm_omni.errors import OmniClientError
 from vllm_omni.inputs.data import OmniDiffusionSamplingParams, OmniInteractionPrompt
 from vllm_omni.metrics import (
     count_audio_frames,
@@ -150,6 +151,9 @@ class StagePool:
         self._release_flushers: dict[int, asyncio.Task[None]] = {}
         self._next_replica_id = 0
         self._request_bindings: dict[str, int] = {}
+        # Explicit caller intent must survive later route resolution so a
+        # requested replica becoming unavailable is an error, not an LB fallback.
+        self._requested_replica_ids: dict[str, int] = {}
         self._unavailable_replicas: set[int] = set()
         self._replica_metrics: list[_ReplicaMetrics] = [_ReplicaMetrics() for _ in self.clients]
         self._output_timestamps_by_request: dict[str, list[float]] = {}
@@ -468,6 +472,44 @@ class StagePool:
         """Explicitly record affinity (distributed mode)."""
         self._affinity[request_id] = input_addr
 
+    def bind_replica_id(self, request_id: str, replica_id: int) -> int:
+        """Validate and bind a caller-requested stage-local replica."""
+        if replica_id < 0 or replica_id >= len(self.clients):
+            raise OmniClientError(
+                f"stage {self.stage_id} replica_id {replica_id} does not exist "
+                f"(known replica slots: 0..{len(self.clients) - 1})"
+            )
+
+        input_addr: str | None = None
+        if self.is_distributed:
+            input_addr = next(
+                (addr for addr, known_id in self._addr_to_replica_id.items() if known_id == replica_id),
+                None,
+            )
+            if input_addr is None or self._serviceable_replica_id_for_addr(input_addr) != replica_id:
+                raise OmniClientError(f"stage {self.stage_id} replica_id {replica_id} is not UP and attached")
+        elif not self.is_replica_available(replica_id):
+            raise OmniClientError(f"stage {self.stage_id} replica_id {replica_id} is not available")
+
+        bound_replica_id = self.get_bound_replica_id(request_id)
+        if bound_replica_id is not None:
+            if bound_replica_id != replica_id:
+                raise OmniClientError(
+                    f"request {request_id} is already bound to stage-{self.stage_id} "
+                    f"replica-{bound_replica_id}, not requested replica-{replica_id}"
+                )
+            self._requested_replica_ids[request_id] = replica_id
+            return bound_replica_id
+
+        if self.is_distributed:
+            assert input_addr is not None
+            self._affinity[request_id] = input_addr
+        else:
+            self._request_bindings[request_id] = replica_id
+
+        self._requested_replica_ids[request_id] = replica_id
+        return replica_id
+
     def release(self, request_id: str) -> None:
         """Drop affinity (distributed mode) and legacy binding for ``request_id``."""
         self._affinity.pop(request_id, None)
@@ -545,6 +587,7 @@ class StagePool:
         """Drop the route binding for *request_id* in this stage."""
         self._request_bindings.pop(request_id, None)
         self._affinity.pop(request_id, None)
+        self._requested_replica_ids.pop(request_id, None)
         self._output_timestamps_by_request.pop(str(request_id), None)
         self._non_empty_first_output_timestamps_by_request.pop(str(request_id), None)
         self._audio_frames_by_request.pop(str(request_id), None)
@@ -1037,6 +1080,7 @@ class StagePool:
         affinity_request_id: str | None = None,
         submit_kwargs: dict[str, Any] | None = None,
         params_override: Any = None,
+        requested_replica_id: int | None = None,
     ) -> int:
         """Submit a stage-entry request into this pool."""
         params = params_override if params_override is not None else req_state.sampling_params_list[self.stage_id]
@@ -1056,14 +1100,28 @@ class StagePool:
             replica_id = await self._pick_or_select(
                 request_id,
                 affinity_request_id=affinity_request_id,
+                requested_replica_id=requested_replica_id,
             )
             client = self._diffusion_client(replica_id)
-            await client.add_request_async(request_id, request, params, **submit_kwargs)
+            try:
+                await client.add_request_async(request_id, request, params, **submit_kwargs)
+            except Exception:
+                # Match the LLM path: a failed admission must not leave either
+                # an automatic affinity or an explicit replica pin behind.
+                self.release_binding(request_id)
+                raise
+            logger.info(
+                "[REPLICA_ROUTE] stage=%s request=%s replica=%s",
+                self.stage_id,
+                request_id,
+                replica_id,
+            )
             return replica_id
 
         replica_id = await self._pick_or_select(
             request_id,
             affinity_request_id=affinity_request_id,
+            requested_replica_id=requested_replica_id,
         )
         client = self.clients[replica_id]
         if client is None:
@@ -1096,6 +1154,12 @@ class StagePool:
                         rollback_error,
                     )
             raise
+        logger.info(
+            "[REPLICA_ROUTE] stage=%s request=%s replica=%s",
+            self.stage_id,
+            request_id,
+            replica_id,
+        )
         return replica_id
 
     async def submit_update(
@@ -1178,8 +1242,21 @@ class StagePool:
         request_id: str,
         *,
         affinity_request_id: str | None = None,
+        requested_replica_id: int | None = None,
     ) -> int:
-        """Bridge to ``pick`` in distributed mode or ``select_replica_id`` legacy."""
+        """Resolve a replica, honoring an explicit stage-local replica when provided."""
+        if requested_replica_id is None:
+            requested_replica_id = self._requested_replica_ids.get(request_id)
+        if requested_replica_id is not None:
+            if affinity_request_id is not None:
+                parent_replica_id = self.get_bound_replica_id(affinity_request_id)
+                if parent_replica_id is not None and parent_replica_id != requested_replica_id:
+                    raise OmniClientError(
+                        f"request {request_id} inherits stage-{self.stage_id} affinity from "
+                        f"{affinity_request_id} on replica-{parent_replica_id}, not requested "
+                        f"replica-{requested_replica_id}"
+                    )
+            return self.bind_replica_id(request_id, requested_replica_id)
         if self.is_distributed:
             return await self.pick(request_id, affinity_request_id=affinity_request_id)
         return self.select_replica_id(request_id, affinity_request_id=affinity_request_id)

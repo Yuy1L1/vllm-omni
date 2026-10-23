@@ -42,6 +42,8 @@ class StageSubmissionMessage(EngineQueueMessage, kw_only=True):
     # Stage ID to provide the output of current request for use in external routing.
     # Only set when that stage has a next stage; otherwise it's a normal request.
     yield_stage_id: int | None = None
+    # Stage-local hard routing constraint for this submission.
+    requested_replica_id: int | None = None
 
 
 class AddCompanionRequestMessage(EngineQueueMessage, kw_only=True):
@@ -137,6 +139,8 @@ class NextStageInputMessage(EngineQueueMessage, kw_only=True):
     sampling_params_list: list[OmniSamplingParams]
     final_stage_id: int
     final_output_stage_ids: list[int]
+    # Set by the caller when resubmitting this opaque input to its receiver.
+    requested_replica_id: int | None = None
 
 
 class AbortResultMessage(EngineQueueMessage, kw_only=True):

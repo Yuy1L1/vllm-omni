@@ -2717,6 +2717,7 @@ class OrchestratorBase:
         t_submit_start: float,
         submit_kwargs: dict[str, Any] | None = None,
         params_override: OmniSamplingParams | None = None,
+        requested_replica_id: int | None = None,
     ) -> None:
         """Submit requests built from the source stage's output to the receiver stage."""
         if req_state.yield_stage_id == source_stage_id:
@@ -2735,6 +2736,8 @@ class OrchestratorBase:
         initial_kwargs = dict(update_kwargs)
         if params_override is not None:
             initial_kwargs["params_override"] = params_override
+        if requested_replica_id is not None:
+            initial_kwargs["requested_replica_id"] = requested_replica_id
         for request in requests:
             if already_submitted:
                 replica_id = await to_pool.submit_update(req_id, req_state, request, **update_kwargs)
@@ -3172,6 +3175,7 @@ class Orchestrator(OrchestratorBase):
                 already_submitted=False,
                 t_submit_start=_time.perf_counter(),
                 submit_kwargs=msg.submit_kwargs,
+                requested_replica_id=msg.requested_replica_id,
             ),
             req_id=req_id,
             stage_id=receiver_stage_id,
@@ -3259,6 +3263,7 @@ class Orchestrator(OrchestratorBase):
                 req_state,
                 prompt,
                 prompt_text=msg.output_prompt_text,
+                requested_replica_id=msg.requested_replica_id,
             ),
             req_id=request_id,
             stage_id=stage_id,

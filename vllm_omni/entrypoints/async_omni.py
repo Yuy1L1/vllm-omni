@@ -521,7 +521,12 @@ class AsyncOmni(AsyncOmniBase, EngineClient):
             )
 
     async def run_entry_stage(
-        self, prompt: OmniPromptType, sampling_params_list: Sequence[OmniSamplingParams], *, request_id: str
+        self,
+        prompt: OmniPromptType,
+        sampling_params_list: Sequence[OmniSamplingParams],
+        *,
+        request_id: str,
+        requested_replica_id: int | None = None,
     ) -> NextStageInputMessage | OutputMessage:
         """Run the entry stage as its own request.
 
@@ -529,24 +534,58 @@ class AsyncOmni(AsyncOmniBase, EngineClient):
         """
         final_stage_id = self.num_stages - 1
         async with self._stage_request(request_id, stage_id=0) as req_state:
-            await self.engine.add_request_async(
-                request_id=req_state.request_id,
-                prompt=prompt,
-                sampling_params_list=sampling_params_list,
-                final_stage_id=final_stage_id,
-                final_output_stage_ids=[final_stage_id],
-                yield_stage_id=0 if final_stage_id > 0 else None,
-            )
+            pool = None
+            if requested_replica_id is not None:
+                pool = self.engine.stage_pools[0]
+                await pool._pick_or_select(
+                    req_state.request_id,
+                    requested_replica_id=requested_replica_id,
+                )
+            try:
+                await self.engine.add_request_async(
+                    request_id=req_state.request_id,
+                    prompt=prompt,
+                    sampling_params_list=sampling_params_list,
+                    final_stage_id=final_stage_id,
+                    final_output_stage_ids=[final_stage_id],
+                    yield_stage_id=0 if final_stage_id > 0 else None,
+                    requested_replica_id=requested_replica_id,
+                )
+            except BaseException:
+                if pool is not None:
+                    pool.release_binding(req_state.request_id)
+                raise
             return await self._stage_response(req_state)
 
     async def run_downstream_stage(
-        self, stage_input: NextStageInputMessage, *, request_id: str
+        self,
+        stage_input: NextStageInputMessage,
+        *,
+        request_id: str,
+        requested_replica_id: int | None = None,
     ) -> NextStageInputMessage | OutputMessage:
         """Run the receiver stage of a next stage input as its own request."""
-        async with self._stage_request(request_id, stage_id=stage_input.receiver_stage_id) as req_state:
-            await self.engine.add_next_stage_input_async(
-                msgspec.structs.replace(stage_input, request_id=req_state.request_id)
-            )
+        stage_id = stage_input.receiver_stage_id
+        async with self._stage_request(request_id, stage_id=stage_id) as req_state:
+            pool = None
+            if requested_replica_id is not None:
+                pool = self.engine.stage_pools[stage_id]
+                await pool._pick_or_select(
+                    req_state.request_id,
+                    requested_replica_id=requested_replica_id,
+                )
+            try:
+                await self.engine.add_next_stage_input_async(
+                    msgspec.structs.replace(
+                        stage_input,
+                        request_id=req_state.request_id,
+                        requested_replica_id=requested_replica_id,
+                    )
+                )
+            except BaseException:
+                if pool is not None:
+                    pool.release_binding(req_state.request_id)
+                raise
             return await self._stage_response(req_state)
 
     @asynccontextmanager

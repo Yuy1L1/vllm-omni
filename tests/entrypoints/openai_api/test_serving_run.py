@@ -6,11 +6,13 @@ from __future__ import annotations
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
+import httpx
 import msgspec
 import pytest
 import torch
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
+from pydantic import ValidationError
 from vllm.outputs import CompletionOutput, RequestOutput
 from vllm.sampling_params import RequestOutputKind, SamplingParams, StructuredOutputsParams
 from vllm.v1.engine import EngineCoreRequest
@@ -55,12 +57,16 @@ def _engine_client(response: NextStageInputMessage | OutputMessage | None = None
     )
 
 
-def _run_client(engine_client: SimpleNamespace | None = None) -> TestClient:
-    """A client for an app with the API router, serving /v1/run with ``engine_client``."""
+def _run_app(engine_client: SimpleNamespace | None = None) -> FastAPI:
     app = FastAPI()
     app.include_router(api_server.router)
     app.state.run_serving = ServingRun(engine_client or _engine_client())
-    return TestClient(app)
+    return app
+
+
+def _run_client(engine_client: SimpleNamespace | None = None) -> TestClient:
+    """A client for an app with the API router, serving /v1/run with ``engine_client``."""
+    return TestClient(_run_app(engine_client))
 
 
 def test_stage_input_round_trips_llm_receiver():
@@ -93,6 +99,41 @@ async def test_call_runs_stage_with_final_only_output_kind():
     await ServingRun(engine_client).run(RunRequest(stage_input=_PROMPT), request_id="run-entry")
     sampling_params_list = engine_client.run_entry_stage.call_args.args[1]
     assert all(params.output_kind == RequestOutputKind.FINAL_ONLY for params in sampling_params_list)
+
+
+@pytest.mark.asyncio
+async def test_call_forwards_requested_replica_to_current_stage():
+    engine_client = _engine_client()
+    serving = ServingRun(engine_client)
+
+    await serving.run(RunRequest(stage_input=_PROMPT, replica_id=1), request_id="run-entry")
+    assert engine_client.run_entry_stage.call_args.kwargs["requested_replica_id"] == 1
+
+    stage_input = _next_stage_input()
+    await serving.run(
+        RunRequest(stage_id=1, stage_input=encode_payload(stage_input), replica_id=0),
+        request_id="run-downstream",
+    )
+    assert engine_client.run_downstream_stage.call_args.kwargs["requested_replica_id"] == 0
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("replica_id", [None, 0, 1])
+async def test_entry_stage_forwards_none_and_nonnegative_replica_ids(replica_id: int | None):
+    engine_client = _engine_client()
+
+    await ServingRun(engine_client).run(
+        RunRequest(stage_input=_PROMPT, replica_id=replica_id),
+        request_id="run-entry",
+    )
+
+    assert engine_client.run_entry_stage.call_args.kwargs["requested_replica_id"] == replica_id
+
+
+@pytest.mark.parametrize("replica_id", ["abc", "1", 1.5, True, -1])
+def test_run_request_rejects_non_strict_or_negative_replica_id(replica_id):
+    with pytest.raises(ValidationError):
+        RunRequest(stage_input=_PROMPT, replica_id=replica_id)
 
 
 @pytest.mark.asyncio
@@ -173,6 +214,29 @@ def test_run_route_keeps_client_error_status():
     engine_client.run_entry_stage.side_effect = OmniClientError("bad prompt", status_code=status_code)
     response = _run_client(engine_client).post("/v1/run", json={"stage_input": _PROMPT})
     assert response.status_code == status_code
+
+
+@pytest.mark.asyncio
+async def test_invalid_explicit_replica_only_fails_that_http_request():
+    engine_client = _engine_client()
+
+    async def route_entry(*_args, requested_replica_id, **_kwargs):
+        if requested_replica_id == 99:
+            raise OmniClientError("replica_id 99 does not exist")
+        return _next_stage_input()
+
+    engine_client.run_entry_stage.side_effect = route_entry
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=_run_app(engine_client)),
+        base_url="http://test",
+    ) as client:
+        invalid = await client.post("/v1/run", json={"stage_input": _PROMPT, "replica_id": 99})
+        valid = await client.post("/v1/run", json={"stage_input": _PROMPT, "replica_id": 0})
+
+    assert invalid.status_code == 400
+    assert "replica_id 99 does not exist" in invalid.json()["detail"]
+    assert valid.status_code == 200
+    assert engine_client.run_entry_stage.await_count == 2
 
 
 def test_run_route_omits_unset_response_fields():
