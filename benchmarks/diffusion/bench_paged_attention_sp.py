@@ -1,9 +1,9 @@
 # SPDX-License-Identifier: Apache-2.0
 # SPDX-FileCopyrightText: Copyright contributors to the vLLM-Omni project
-"""Benchmark dense vs Scheduler-paged strict Ulysses x AllGather-KV.
+"""Benchmark dense vs Scheduler-paged AllGather-KV SP strategies.
 
 This is an end-to-end execution-path comparison, not a claim that paged
-attention should be faster. Both cases execute the same U=2, A=2 collectives
+attention should be faster. Both cases execute the same configured collectives
 and the same logical local-Q/global-KV attention. The ratio measures the cost
 of native metadata construction, global KV cache writes, and paged reads.
 
@@ -15,6 +15,11 @@ reports the worst rank because collectives progress at straggler speed.
 Run from the repository root on a machine with four GPUs:
 
     python benchmarks/diffusion/bench_paged_attention_sp.py
+
+For plain four-rank AllGather-KV:
+
+    python benchmarks/diffusion/bench_paged_attention_sp.py \
+        --ulysses-degree 1 --allgather-degree 4
 
 For a quick smoke run:
 
@@ -46,6 +51,9 @@ from vllm_omni.diffusion.attention.backends.flash_attn import (
     FlashAttentionImpl,
 )
 from vllm_omni.diffusion.attention.layer import Attention
+from vllm_omni.diffusion.attention.parallel.allgather_kv import (
+    AllGatherKVParallelAttention,
+)
 from vllm_omni.diffusion.attention.parallel.ulysses_allgather import (
     UlyssesAllGatherKVParallelAttention,
 )
@@ -72,9 +80,7 @@ from vllm_omni.platforms import current_omni_platform
 _LAYER_NAME = "model.layers.0.attn"
 _ULYSSES_DEGREE = 2
 _ALLGATHER_DEGREE = 2
-_WORLD_SIZE = _ULYSSES_DEGREE * _ALLGATHER_DEGREE
 _NUM_HEADS = 8
-_LOCAL_HEADS = _NUM_HEADS // _ULYSSES_DEGREE
 _HEAD_SIZE = 64
 _BLOCK_SIZE = 16
 _DTYPE = torch.float16
@@ -89,7 +95,8 @@ class _SmokeAttention(nn.Module):
         self.softmax_scale = _HEAD_SIZE**-0.5
 
 
-def _build_real_adapter(device: torch.device, max_seq_len: int):
+def _build_real_adapter(device: torch.device, max_seq_len: int, *, ulysses_degree: int):
+    local_heads = _NUM_HEADS // ulysses_degree
     vllm_config = VllmConfig(
         cache_config=CacheConfig(
             block_size=_BLOCK_SIZE,
@@ -107,8 +114,8 @@ def _build_real_adapter(device: torch.device, max_seq_len: int):
     )
     vllm_config.model_config = model_config
     model_config.set_attention_geometry(
-        num_heads=_LOCAL_HEADS,
-        num_kv_heads=_LOCAL_HEADS,
+        num_heads=local_heads,
+        num_kv_heads=local_heads,
         head_size=_HEAD_SIZE,
     )
     vllm_config.compilation_config.static_forward_context.clear()
@@ -128,7 +135,7 @@ def _build_real_adapter(device: torch.device, max_seq_len: int):
             spec=full_spec,
             vllm_config=vllm_config,
             device=device,
-            ulysses_degree=_ULYSSES_DEGREE,
+            ulysses_degree=ulysses_degree,
         )
     vllm_config.compilation_config.static_forward_context[_LAYER_NAME] = native_layer
 
@@ -234,6 +241,8 @@ def _worker(
     seqs: list[int],
     warmup: int,
     iters: int,
+    ulysses_degree: int,
+    allgather_degree: int,
 ) -> None:
     device = torch.device(f"{current_omni_platform.device_type}:{local_rank}")
     current_omni_platform.set_device(device)
@@ -248,21 +257,28 @@ def _worker(
         data_parallel_size=1,
         cfg_parallel_size=1,
         sequence_parallel_size=world_size,
-        ulysses_degree=_ULYSSES_DEGREE,
+        ulysses_degree=ulysses_degree,
         ring_degree=1,
-        allgather_degree=_ALLGATHER_DEGREE,
+        allgather_degree=allgather_degree,
         tensor_parallel_size=1,
         pipeline_parallel_size=1,
     )
 
     try:
-        adapter, diffusion_layer = _build_real_adapter(device, max(seqs))
-        strategy = UlyssesAllGatherKVParallelAttention(
-            get_sp_group(),
-            scatter_idx=2,
-            gather_idx=1,
-            use_sync=False,
+        adapter, diffusion_layer = _build_real_adapter(
+            device,
+            max(seqs),
+            ulysses_degree=ulysses_degree,
         )
+        if ulysses_degree > 1:
+            strategy = UlyssesAllGatherKVParallelAttention(
+                get_sp_group(),
+                scatter_idx=2,
+                gather_idx=1,
+                use_sync=False,
+            )
+        else:
+            strategy = AllGatherKVParallelAttention(get_sp_group())
         paged_attention = _build_attention(diffusion_layer, strategy, paged=True)
         dense_attention = _build_attention(diffusion_layer, strategy, paged=False)
 
@@ -352,10 +368,13 @@ def _worker(
                 dense_p50 = statistics.median(dense_samples)
                 paged_p50 = statistics.median(paged_samples)
                 element_size = torch.empty((), dtype=_DTYPE).element_size()
-                kernel_query_tokens = seq_len // _ALLGATHER_DEGREE
-                local_kv_payload_bytes = 2 * kernel_query_tokens * _LOCAL_HEADS * _HEAD_SIZE * element_size
-                global_kv_write_bytes = 2 * seq_len * _LOCAL_HEADS * _HEAD_SIZE * element_size
+                kernel_query_tokens = seq_len // allgather_degree
+                local_heads = _NUM_HEADS // ulysses_degree
+                local_kv_payload_bytes = 2 * kernel_query_tokens * local_heads * _HEAD_SIZE * element_size
+                global_kv_write_bytes = 2 * seq_len * local_heads * _HEAD_SIZE * element_size
                 result = {
+                    "ulysses_degree": ulysses_degree,
+                    "allgather_degree": allgather_degree,
                     "seq_len": seq_len,
                     "input_tokens_per_rank": local_tokens,
                     "kernel_query_tokens": kernel_query_tokens,
@@ -377,7 +396,12 @@ def _worker(
                 current_omni_platform.synchronize()
 
         if local_rank == 0:
-            print("\nDense vs paged Ulysses x AllGather-KV (worst-rank latency)")
+            strategy_name = (
+                f"Ulysses({ulysses_degree}) x AllGather-KV({allgather_degree})"
+                if ulysses_degree > 1
+                else f"AllGather-KV({allgather_degree})"
+            )
+            print(f"\nDense vs paged {strategy_name} (worst-rank latency)")
             print("S       local-KV   global-write   dense p50   paged p50   paged/dense")
             for row in results:
                 print(
@@ -398,6 +422,8 @@ def main() -> None:
     parser.add_argument("--seqs", default="256,1024,4096,16384,32768")
     parser.add_argument("--warmup", type=int, default=3)
     parser.add_argument("--iters", type=int, default=30)
+    parser.add_argument("--ulysses-degree", type=int, default=_ULYSSES_DEGREE)
+    parser.add_argument("--allgather-degree", type=int, default=_ALLGATHER_DEGREE)
     args = parser.parse_args()
 
     seqs = [int(value) for value in args.seqs.split(",")]
@@ -405,19 +431,28 @@ def main() -> None:
         raise SystemExit("--seqs must contain positive integers")
     if args.warmup < 0 or args.iters <= 0:
         raise SystemExit("--warmup must be non-negative and --iters must be positive")
-    if current_omni_platform.get_device_count() < _WORLD_SIZE:
-        raise SystemExit(f"Need {_WORLD_SIZE} GPUs")
+    if args.ulysses_degree <= 0 or args.allgather_degree <= 0:
+        raise SystemExit("SP degrees must be positive")
+    if _NUM_HEADS % args.ulysses_degree:
+        raise SystemExit(f"num_heads={_NUM_HEADS} must be divisible by ulysses_degree={args.ulysses_degree}")
+    world_size = args.ulysses_degree * args.allgather_degree
+    if any(value % world_size for value in seqs):
+        raise SystemExit(f"all sequence lengths must be divisible by world_size={world_size}")
+    if current_omni_platform.get_device_count() < world_size:
+        raise SystemExit(f"Need {world_size} GPUs")
 
     torch.multiprocessing.spawn(
         _worker,
         args=(
-            _WORLD_SIZE,
+            world_size,
             get_file_store_init_method(),
             seqs,
             args.warmup,
             args.iters,
+            args.ulysses_degree,
+            args.allgather_degree,
         ),
-        nprocs=_WORLD_SIZE,
+        nprocs=world_size,
         join=True,
     )
 
