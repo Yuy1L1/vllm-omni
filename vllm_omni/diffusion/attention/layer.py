@@ -574,12 +574,16 @@ class Attention(nn.Module):
             raise NotImplementedError(
                 f"Diffusion paged KV requires an Omni backend with paged support; selected {backend_name}"
             )
+        is_paged_ring = (
+            use_paged_attention
+            and strategy is not self._no_parallel_strategy
+            and (
+                strategy.name == "ring"
+                or (self.use_ring and strategy.name == "ulysses")
+            )
+        )
         if use_paged_attention and strategy is not self._no_parallel_strategy:
             strategy_name = strategy.name
-            if self.use_ring or strategy_name == "ring":
-                raise NotImplementedError(
-                    "paged Scheduler KV is not supported with Ring attention; use strict Ulysses or no SP"
-                )
             if strategy_name in ("ulysses", "ulysses_allgather_kv") and get_ulysses_mode(default="strict") != "strict":
                 raise NotImplementedError("paged Scheduler KV currently supports only strict Ulysses")
             if strategy_name == "ulysses_allgather_kv":
@@ -592,11 +596,20 @@ class Attention(nn.Module):
                         "ulysses_degree * allgather_degree; "
                         f"got sp_padding_size={sp_padding_size}"
                     )
+            if is_paged_ring and strategy_name == "ulysses":
+                forward_ctx = get_forward_context() if is_forward_context_available() else None
+                sp_padding_size = int(getattr(forward_ctx, "sp_padding_size", 0))
+                if sp_padding_size:
+                    raise NotImplementedError(
+                        "Paged Ulysses + Ring currently requires the sequence "
+                        "length to be divisible by ulysses_degree * ring_degree; "
+                        f"got sp_padding_size={sp_padding_size}"
+                    )
 
         if (
             use_paged_attention
             and strategy is not self._no_parallel_strategy
-            and strategy.name in ("allgather_kv", "ulysses_allgather_kv")
+            and (strategy.name in ("allgather_kv", "ulysses_allgather_kv") or is_paged_ring)
             and attn_metadata is None
         ):
             attn_metadata = AttentionMetadata()
@@ -659,19 +672,40 @@ class Attention(nn.Module):
                 key = _remove_paged_sp_padding(key)
                 value = _remove_paged_sp_padding(value)
 
+        if is_paged_ring and strategy.name == "ulysses":
+            assert self.ring_runner is not None
+            assert attn_metadata is not None
+            attn_metadata = self.ring_runner.with_paged_kv_ranges(
+                query,
+                key,
+                value,
+                attn_metadata,
+            )
+
         # 2. This is the shared GPU/NPU boundary. The Worker adapter prepares
         # the native page-table context after SP has produced rank-local Q/K/V;
         # backend resolution below selects CUDA or Ascend execution.
         if use_paged_attention:
             assert paged_adapter is not None
-            paged_kv_context = paged_adapter.prepare_layer_context(
-                self.prefix,
-                query,
-                key,
-                value,
-                omni_attn_metadata=attn_metadata,
-            )
-            out = self.attention.forward_paged(paged_kv_context)
+            if is_paged_ring:
+                paged_ring_context = paged_adapter.prepare_ring_layer_context(
+                    self.prefix,
+                    key,
+                    value,
+                    omni_attn_metadata=attn_metadata,
+                )
+                key, value = self.attention.materialize_paged_ring_kv(paged_ring_context)
+                attn_metadata = self._with_kv_cache_dtype(attn_metadata)
+                out = self._run_ring_attention(query, key, value, attn_metadata)
+            else:
+                paged_kv_context = paged_adapter.prepare_layer_context(
+                    self.prefix,
+                    query,
+                    key,
+                    value,
+                    omni_attn_metadata=attn_metadata,
+                )
+                out = self.attention.forward_paged(paged_kv_context)
         else:
             attn_metadata = self._with_kv_cache_dtype(attn_metadata)
             if self.use_ring and strategy is not self._no_parallel_strategy:

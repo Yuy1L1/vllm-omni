@@ -601,6 +601,82 @@ class FlashAttentionImpl(AttentionImpl[AttentionMetadata]):
         # (b s) h d -> b s h d
         return out.reshape(batch_size, q_len, *out.shape[1:])
 
+    def materialize_paged_ring_kv(
+        self,
+        paged_ring_context,
+    ) -> tuple[torch.Tensor, torch.Tensor]:
+        """Write local K/V pages and gather them into a dense Ring shard."""
+
+        layer = getattr(paged_ring_context, "layer", None)
+        if layer is None:
+            raise TypeError(
+                "paged_ring_context must expose a native diffusion attention layer"
+            )
+
+        kv_cache = getattr(layer, "kv_cache", None)
+        if kv_cache is None:
+            raise RuntimeError(
+                f"Native KV cache is not bound for diffusion layer "
+                f"{layer.layer_name!r}"
+            )
+
+        native_impl = getattr(layer, "impl", None)
+        cache_update = getattr(native_impl, "do_kv_cache_update", None)
+        if not callable(cache_update):
+            raise RuntimeError(
+                f"Native attention implementation for "
+                f"{layer.layer_name!r} cannot update the KV cache"
+            )
+
+        expected_content_size = layer.head_size + layer.head_size_v
+        if (
+            kv_cache.ndim != 4
+            or kv_cache.shape[-1] != expected_content_size
+        ):
+            raise NotImplementedError(
+                "Paged Ring MVP requires the packed CUDA KV-cache layout "
+                "[num_blocks, num_kv_heads, block_size, K+V]"
+            )
+
+        slot_mapping = paged_ring_context.slot_mapping
+        if slot_mapping.ndim != 1:
+            raise ValueError(
+                "Paged Ring slot mapping must be one-dimensional"
+            )
+
+        # Always write explicitly: unlike forward_paged(), the Ring path does not
+        # call the native attention kernel that normally owns the fused cache write.
+        cache_update(
+            layer,
+            paged_ring_context.key_write,
+            paged_ring_context.value_write,
+            kv_cache,
+            slot_mapping,
+        )
+
+        # [blocks, heads, block, K+V]
+        #     -> [blocks, block, heads, K+V]
+        token_major_cache = kv_cache.transpose(1, 2)
+        key_cache, value_cache = token_major_cache.split(
+            (layer.head_size, layer.head_size_v),
+            dim=-1,
+        )
+
+        block_size = token_major_cache.shape[1]
+        block_ids = torch.div(
+            slot_mapping,
+            block_size,
+            rounding_mode="floor",
+        )
+        block_offsets = torch.remainder(slot_mapping, block_size)
+
+        # Advanced indexing performs the baseline gather/pack.
+        key = key_cache[block_ids, block_offsets]
+        value = value_cache[block_ids, block_offsets]
+
+        # Restore BSND for the existing dense Ring runner.
+        return key.unsqueeze(0), value.unsqueeze(0)
+
     def forward_paged(self, paged_kv_context) -> torch.Tensor:
         """Run platform-native paged attention through the Omni backend.
 

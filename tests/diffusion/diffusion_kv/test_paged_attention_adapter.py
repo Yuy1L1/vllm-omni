@@ -324,6 +324,64 @@ def test_paged_adapter_accepts_native_gqa_shapes(monkeypatch: pytest.MonkeyPatch
     assert context.value_write.shape == (3, 8, 4)
 
 
+def test_ring_paged_context_selects_local_slot_range(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    adapter, _, layer, _ = _make_adapter(
+        monkeypatch,
+        capacity=16,
+    )
+    batch = adapter.prepare_batch(
+        [
+            DiffusionPagedAttentionRow(
+                request_id="req-0",
+                sequence_id=0,
+                query_len=8,
+                seq_len=8,
+            )
+        ]
+    )
+
+    key = torch.arange(
+        1 * 2 * 2 * 4,
+        dtype=torch.float32,
+    ).reshape(1, 2, 2, 4)
+    value = key + 100
+
+    local_range = QueryRange(
+        local_start=0,
+        local_end=2,
+        global_start=4,
+    )
+    metadata = AttentionMetadata(
+        query_ranges=(local_range,),
+        kv_write_ranges=(local_range,),
+    )
+
+    with adapter.activate(batch):
+        context = adapter.prepare_ring_layer_context(
+            "layer-0",
+            key,
+            value,
+            omni_attn_metadata=metadata,
+        )
+
+    assert context.layer is layer
+    assert torch.equal(
+        context.key_write,
+        key.reshape(2, 2, 4),
+    )
+    assert torch.equal(
+        context.value_write,
+        value.reshape(2, 2, 4),
+    )
+    assert context.slot_mapping.tolist() == [4, 5]
+
+    # Context preparation must not mutate the cache.
+    assert layer.native_events == []
+    assert layer.updates == []
+
+
 def test_paged_adapter_preserves_strided_kv_for_platform_writer(monkeypatch: pytest.MonkeyPatch) -> None:
     adapter, _, _, _ = _make_adapter(monkeypatch)
     batch = adapter.prepare_batch(
@@ -1386,6 +1444,225 @@ def test_layer_adapter_accepts_platform_native_backend_and_uses_rank_local_heads
     assert impl_kwargs["num_kv_heads"] == 2
 
 
+def test_omni_attention_routes_paged_ring_through_dense_ring_runner() -> None:
+    events: list[str] = []
+    local_range = QueryRange(0, 2, 0)
+
+    class Strategy:
+        name = "ring"
+
+        def pre_attention(self, query, key, value, metadata):
+            events.append("pre")
+            assert isinstance(metadata, AttentionMetadata)
+
+            metadata.query_ranges = (local_range,)
+            metadata.kv_write_ranges = (local_range,)
+
+            return (
+                query + 1,
+                key + 2,
+                value + 3,
+                metadata,
+                object(),
+            )
+
+        def post_attention(self, output, _ctx):
+            events.append("post")
+            return output + 4
+
+    class Adapter:
+        def prepare_ring_layer_context(
+            self,
+            layer_name,
+            key,
+            value,
+            *,
+            omni_attn_metadata,
+        ):
+            events.append("prepare")
+            assert layer_name == "layer-0"
+            assert omni_attn_metadata.query_ranges == (local_range,)
+            assert omni_attn_metadata.kv_write_ranges == (local_range,)
+            assert torch.equal(key, original + 2)
+            assert torch.equal(value, original + 3)
+
+            return SimpleNamespace(
+                key_write=key,
+                value_write=value,
+            )
+
+        def prepare_layer_context(self, *_args, **_kwargs):
+            raise AssertionError(
+                "Paged Ring must not use the native paged-attention path"
+            )
+
+    class Backend:
+        def materialize_paged_ring_kv(self, context):
+            events.append("materialize")
+            return (
+                context.key_write + 10,
+                context.value_write + 20,
+            )
+
+        def forward_paged(self, _context):
+            raise AssertionError(
+                "Paged Ring must not call forward_paged"
+            )
+
+    strategy = Strategy()
+    layer = Attention.__new__(Attention)
+    nn.Module.__init__(layer)
+
+    layer._explicit_cross_contract = False
+    layer.prefix = "layer-0"
+    layer.paged_kv_cache_role = "primary"
+    layer.attn_backend = SimpleNamespace(
+        supports_paged_kv=True,
+        get_name=lambda: "FLASH_ATTN",
+    )
+    layer.attention = Backend()
+    layer.use_ring = True
+    layer._no_parallel_strategy = object()
+    layer._get_active_parallel_strategy = lambda: strategy
+    layer._with_kv_cache_dtype = lambda metadata: metadata
+
+    def run_ring(query, key, value, metadata):
+        events.append("ring")
+        assert torch.equal(query, original + 1)
+        assert torch.equal(key, original + 12)
+        assert torch.equal(value, original + 23)
+        assert metadata.query_ranges == (local_range,)
+        assert metadata.kv_write_ranges == (local_range,)
+        return query * 2
+
+    layer._run_ring_attention = run_ring
+
+    original = torch.zeros(1, 2, 2, 4)
+
+    with set_forward_context(), override_paged_kv_adapter(Adapter()):
+        output = layer._forward_impl(
+            original,
+            original,
+            original,
+            attn_metadata=None,
+        )
+
+    assert events == [
+        "pre",
+        "prepare",
+        "materialize",
+        "ring",
+        "post",
+    ]
+    assert torch.equal(output, torch.full_like(original, 6))
+
+
+def test_omni_attention_composes_paged_ulysses_with_ring_runner() -> None:
+    events: list[str] = []
+    local_range = QueryRange(0, 2, 0)
+
+    class Strategy:
+        name = "ulysses"
+
+        def pre_attention(self, query, key, value, metadata):
+            events.append("ulysses_pre")
+            assert isinstance(metadata, AttentionMetadata)
+            return query + 1, key + 2, value + 3, metadata, object()
+
+        def post_attention(self, output, _ctx):
+            events.append("ulysses_post")
+            return output + 4
+
+    class RingRunner:
+        def with_paged_kv_ranges(self, query, key, value, metadata):
+            events.append("ring_ranges")
+            assert torch.equal(query, original + 1)
+            assert torch.equal(key, original + 2)
+            assert torch.equal(value, original + 3)
+            metadata.query_ranges = (local_range,)
+            metadata.kv_write_ranges = (local_range,)
+            return metadata
+
+    class Adapter:
+        def prepare_ring_layer_context(
+            self,
+            layer_name,
+            key,
+            value,
+            *,
+            omni_attn_metadata,
+        ):
+            events.append("prepare")
+            assert layer_name == "layer-0"
+            assert omni_attn_metadata.query_ranges == (local_range,)
+            assert omni_attn_metadata.kv_write_ranges == (local_range,)
+            assert torch.equal(key, original + 2)
+            assert torch.equal(value, original + 3)
+            return SimpleNamespace(key_write=key, value_write=value)
+
+        def prepare_layer_context(self, *_args, **_kwargs):
+            raise AssertionError(
+                "Paged Ulysses+Ring must not use the native paged-attention path"
+            )
+
+    class Backend:
+        def materialize_paged_ring_kv(self, context):
+            events.append("materialize")
+            return context.key_write + 10, context.value_write + 20
+
+        def forward_paged(self, _context):
+            raise AssertionError(
+                "Paged Ulysses+Ring must not call forward_paged"
+            )
+
+    strategy = Strategy()
+    layer = Attention.__new__(Attention)
+    nn.Module.__init__(layer)
+    layer._explicit_cross_contract = False
+    layer.prefix = "layer-0"
+    layer.paged_kv_cache_role = "primary"
+    layer.attn_backend = SimpleNamespace(
+        supports_paged_kv=True,
+        get_name=lambda: "FLASH_ATTN",
+    )
+    layer.attention = Backend()
+    layer.use_ring = True
+    layer.ring_runner = RingRunner()
+    layer._no_parallel_strategy = object()
+    layer._get_active_parallel_strategy = lambda: strategy
+    layer._with_kv_cache_dtype = lambda metadata: metadata
+
+    def run_ring(query, key, value, metadata):
+        events.append("ring")
+        assert torch.equal(query, original + 1)
+        assert torch.equal(key, original + 12)
+        assert torch.equal(value, original + 23)
+        assert metadata.query_ranges == (local_range,)
+        assert metadata.kv_write_ranges == (local_range,)
+        return query * 2
+
+    layer._run_ring_attention = run_ring
+    original = torch.zeros(1, 2, 2, 4)
+
+    with set_forward_context(), override_paged_kv_adapter(Adapter()):
+        output = layer._forward_impl(
+            original,
+            original,
+            original,
+            attn_metadata=None,
+        )
+
+    assert events == [
+        "ulysses_pre",
+        "ring_ranges",
+        "prepare",
+        "materialize",
+        "ring",
+        "ulysses_post",
+    ]
+    assert torch.equal(output, torch.full_like(original, 6))
+
+
 def test_omni_attention_wraps_paged_kernel_with_sp_hooks() -> None:
     events: list[str] = []
 
@@ -1507,6 +1784,38 @@ def test_omni_attention_rejects_paged_ulysses_allgather_padding_before_collectiv
         set_forward_context(),
         override_paged_kv_adapter(Adapter()),
         pytest.raises(NotImplementedError, match="divisible.*ulysses_degree \\* allgather_degree"),
+    ):
+        get_forward_context().sp_padding_size = 1
+        layer._forward_impl(tensor, tensor, tensor)
+
+
+def test_omni_attention_rejects_paged_ulysses_ring_padding_before_collectives() -> None:
+    class Strategy:
+        name = "ulysses"
+
+        def pre_attention(self, *_args, **_kwargs):
+            raise AssertionError("padding must fail before sequence-parallel collectives")
+
+    class Adapter:
+        def prepare_ring_layer_context(self, *_args, **_kwargs):
+            raise AssertionError("padding must fail before adapter preparation")
+
+    layer = Attention.__new__(Attention)
+    nn.Module.__init__(layer)
+    layer._explicit_cross_contract = False
+    layer.prefix = "layer-0"
+    layer.paged_kv_cache_role = "primary"
+    layer.attn_backend = SimpleNamespace(supports_paged_kv=True, get_name=lambda: "FLASH_ATTN")
+    layer.use_ring = True
+    layer.ring_runner = object()
+    layer._no_parallel_strategy = object()
+    layer._get_active_parallel_strategy = lambda: Strategy()
+    tensor = torch.zeros(1, 2, 2, 4)
+
+    with (
+        set_forward_context(),
+        override_paged_kv_adapter(Adapter()),
+        pytest.raises(NotImplementedError, match="divisible.*ulysses_degree \\* ring_degree"),
     ):
         get_forward_context().sp_padding_size = 1
         layer._forward_impl(tensor, tensor, tensor)

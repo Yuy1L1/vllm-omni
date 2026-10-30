@@ -264,6 +264,16 @@ class PreparedDiffusionPagedAttentionBatch:
 
 
 @dataclass(frozen=True, slots=True)
+class DiffusionPagedRingContext:
+    """Rank-local KV write inputs for paged Scheduler + Ring execution."""
+
+    layer: DiffusionPagedAttentionLayerAdapter
+    key_write: torch.Tensor
+    value_write: torch.Tensor
+    slot_mapping: torch.Tensor
+
+
+@dataclass(frozen=True, slots=True)
 class DiffusionPagedAttentionContext:
     """One layer's native inputs for an Omni paged-backend invocation."""
 
@@ -800,6 +810,104 @@ class DiffusionPagedAttentionAdapter:
             metadata_by_segment.append(segment_metadata)
         self._active_piecewise_native_metadata = tuple(metadata_by_segment)
         return self._active_piecewise_native_metadata
+
+    def prepare_ring_layer_context(
+        self,
+        layer_name: str,
+        key: torch.Tensor,
+        value: torch.Tensor,
+        *,
+        omni_attn_metadata: Any | None = None,
+    ) -> DiffusionPagedRingContext:
+        """Prepare a Paged Ring context for one diffusion attention layer."""
+        if self._active_batch is None:
+            raise RuntimeError("Paged attention forward must run inside adapter.activate(batch)")
+        try:
+            layer = self.layers[layer_name]
+        except KeyError as exc:
+            raise KeyError(f"Unknown diffusion paged attention layer {layer_name!r}") from exc
+
+        batch = self._active_batch
+        if len(batch.rows) != 1:
+            raise NotImplementedError("Paged Ring MVP currently supports one row per forward")
+
+        # Query ranges map rank-local Q rows onto the global logical sequence.
+        query_ranges = getattr(omni_attn_metadata, "query_ranges", None)
+        kv_write_ranges = getattr(omni_attn_metadata, "kv_write_ranges", None)
+
+        if (
+            not isinstance(query_ranges, tuple)
+            or len(query_ranges) != 1
+            or not isinstance(query_ranges[0], QueryRange)
+        ):
+            raise ValueError("Paged Ring MVP requires one contiguous query range")
+
+        if (
+            not isinstance(kv_write_ranges, tuple)
+            or len(kv_write_ranges) != 1
+            or not isinstance(kv_write_ranges[0], QueryRange)
+        ):
+            raise ValueError("Paged Ring MVP requires one contiguous KV-write range")
+
+        if query_ranges != kv_write_ranges:
+            raise NotImplementedError("Paged Ring MVP requires aligned Q/K/V ranges")
+
+        row = batch.rows[0]
+        if row.kv_start_pos != 0 or row.query_len != row.seq_len:
+            raise NotImplementedError(
+                "Paged Ring MVP currently supports only cold full-sequence writes"
+            )
+
+        if not bool(getattr(layer.spec, "non_causal", False)):
+            raise NotImplementedError("Paged Ring MVP currently supports only non-causal attention")
+
+        key_flat, key_token_shape, _ = self._flatten_tensor(
+            key,
+            num_heads=layer.num_kv_heads,
+            head_size=layer.head_size,
+            name="Ring key",
+        )
+        value_flat, value_token_shape, _ = self._flatten_tensor(
+            value,
+            num_heads=layer.num_kv_heads,
+            head_size=layer.head_size_v,
+            name="Ring value",
+        )
+
+        if key_token_shape != value_token_shape:
+            raise ValueError("Paged Ring key/value token layouts must match")
+
+        write_range = kv_write_ranges[0]
+        local_len = write_range.local_end - write_range.local_start
+
+        if write_range.local_start != 0 or local_len != key_flat.shape[0]:
+            raise ValueError(
+                "Paged Ring KV-write range must cover the local K/V payload"
+            )
+
+        global_end = write_range.global_start + local_len
+        if write_range.global_start < 0 or global_end > row.seq_len:
+            raise ValueError("Paged Ring KV-write range exceeds the Scheduler sequence")
+
+        full_slot_mapping = batch.slot_mappings_by_layer.get(layer_name)
+        if full_slot_mapping is None:
+            raise KeyError(
+                f"No native slot mapping was built for diffusion layer {layer_name!r}"
+            )
+
+        full_slot_mapping = full_slot_mapping.reshape(-1)[: batch.num_tokens]
+        write_offset = write_range.global_start - row.kv_start_pos
+        slot_mapping = full_slot_mapping[write_offset : write_offset + local_len]
+
+        if slot_mapping.numel() != local_len:
+            raise ValueError("Paged Ring KV-write range exceeds the prepared slot mapping")
+
+        return DiffusionPagedRingContext(
+            layer=layer,
+            key_write=key_flat,
+            value_write=value_flat,
+            slot_mapping=slot_mapping,
+        )
 
     def prepare_layer_context(
         self,

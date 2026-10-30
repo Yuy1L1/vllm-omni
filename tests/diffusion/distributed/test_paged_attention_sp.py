@@ -25,6 +25,8 @@ from vllm_omni.diffusion.attention.layer import Attention
 from vllm_omni.diffusion.attention.parallel.allgather_kv import (
     AllGatherKVParallelAttention,
 )
+from vllm_omni.diffusion.attention.parallel.ring import RingParallelAttention
+from vllm_omni.diffusion.attention.parallel.ulysses import UlyssesParallelAttention
 from vllm_omni.diffusion.attention.parallel.ulysses_allgather import (
     UlyssesAllGatherKVParallelAttention,
 )
@@ -159,7 +161,11 @@ def _build_real_adapter(device: torch.device, *, ulysses_degree: int):
     return adapter, diffusion_layer, native_layer
 
 
-def _build_omni_attention(diffusion_layer, strategy) -> Attention:
+def _build_omni_attention(
+    diffusion_layer,
+    strategy,
+    ring_runner=None,
+) -> Attention:
     layer = Attention.__new__(Attention)
     nn.Module.__init__(layer)
     layer._explicit_cross_contract = False
@@ -176,7 +182,10 @@ def _build_omni_attention(diffusion_layer, strategy) -> Attention:
         softmax_scale=diffusion_layer.softmax_scale,
         num_kv_heads=_NUM_HEADS,
     )
-    layer.use_ring = False
+    layer.use_ring = ring_runner is not None
+    layer.ring_runner = ring_runner
+    layer.softmax_scale = diffusion_layer.softmax_scale
+    layer.causal = False
     layer._no_parallel_strategy = object()
     layer._get_active_parallel_strategy = lambda: strategy
     layer._with_kv_cache_dtype = lambda metadata: metadata
@@ -188,6 +197,7 @@ def _worker(
     world_size: int,
     init_method: str,
     ulysses_degree: int,
+    ring_degree: int,
     allgather_degree: int,
 ) -> None:
     device = torch.device(f"{current_omni_platform.device_type}:{local_rank}")
@@ -204,7 +214,7 @@ def _worker(
         cfg_parallel_size=1,
         sequence_parallel_size=world_size,
         ulysses_degree=ulysses_degree,
-        ring_degree=1,
+        ring_degree=ring_degree,
         allgather_degree=allgather_degree,
         tensor_parallel_size=1,
         pipeline_parallel_size=1,
@@ -216,8 +226,31 @@ def _worker(
             device,
             ulysses_degree=ulysses_degree,
         )
-        if ulysses_degree > 1:
+        ring_runner = None
+        if ring_degree > 1:
+            ring_runner = RingParallelAttention(
+                sp_group,
+                attn_backend_pref="sdpa",
+            )
+
+            if ulysses_degree > 1:
+                strategy = UlyssesParallelAttention(
+                    sp_group,
+                    scatter_idx=2,
+                    gather_idx=1,
+                    use_sync=False,
+                )
+            else:
+                strategy = ring_runner
+        elif ulysses_degree > 1 and allgather_degree > 1:
             strategy = UlyssesAllGatherKVParallelAttention(
+                sp_group,
+                scatter_idx=2,
+                gather_idx=1,
+                use_sync=False,
+            )
+        elif ulysses_degree > 1:
+            strategy = UlyssesParallelAttention(
                 sp_group,
                 scatter_idx=2,
                 gather_idx=1,
@@ -225,7 +258,11 @@ def _worker(
             )
         else:
             strategy = AllGatherKVParallelAttention(sp_group)
-        attention = _build_omni_attention(diffusion_layer, strategy)
+        attention = _build_omni_attention(
+            diffusion_layer,
+            strategy,
+            ring_runner=ring_runner,
+        )
         batch = adapter.prepare_batch(
             [
                 DiffusionPagedAttentionRow(
@@ -275,22 +312,42 @@ def _worker(
         torch.testing.assert_close(actual, expected, rtol=2e-2, atol=2e-2)
         assert tuple(actual.shape) == (1, local_tokens, _NUM_HEADS, _HEAD_SIZE)
         assert batch.slot_mappings.tolist() == [list(range(3 * _BLOCK_SIZE, 3 * _BLOCK_SIZE + _GLOBAL_TOKENS))]
-
-        local_heads = _NUM_HEADS // ulysses_degree
-        head_start = sp_group.ulysses_rank * local_heads
-        head_slice = slice(head_start, head_start + local_heads)
-        expected_cache_key = global_key[:, :, head_slice].squeeze(0)
-        expected_cache_value = global_value[:, :, head_slice].squeeze(0)
         key_cache, value_cache = native_layer.kv_cache.transpose(1, 2).split(_HEAD_SIZE, dim=-1)
-        torch.testing.assert_close(key_cache[3, :_GLOBAL_TOKENS], expected_cache_key)
-        torch.testing.assert_close(value_cache[3, :_GLOBAL_TOKENS], expected_cache_value)
+        if ring_degree > 1:
+            ring_tokens = _GLOBAL_TOKENS // ring_degree
+            ring_start = sp_group.ring_rank * ring_tokens
+            ring_slice = slice(ring_start, ring_start + ring_tokens)
+
+            local_heads = _NUM_HEADS // ulysses_degree
+            head_start = sp_group.ulysses_rank * local_heads
+            head_slice = slice(head_start, head_start + local_heads)
+
+            expected_cache_key = global_key[:, ring_slice, head_slice].squeeze(0)
+            expected_cache_value = global_value[:, ring_slice, head_slice].squeeze(0)
+
+            torch.testing.assert_close(
+                key_cache[3, ring_slice],
+                expected_cache_key,
+            )
+            torch.testing.assert_close(
+                value_cache[3, ring_slice],
+                expected_cache_value,
+            )
+        else:
+            local_heads = _NUM_HEADS // ulysses_degree
+            head_start = sp_group.ulysses_rank * local_heads
+            head_slice = slice(head_start, head_start + local_heads)
+            expected_cache_key = global_key[:, :, head_slice].squeeze(0)
+            expected_cache_value = global_value[:, :, head_slice].squeeze(0)
+            torch.testing.assert_close(key_cache[3, :_GLOBAL_TOKENS], expected_cache_key)
+            torch.testing.assert_close(value_cache[3, :_GLOBAL_TOKENS], expected_cache_value)
         dist.barrier(device_ids=[local_rank])
     finally:
         destroy_distributed_env()
 
 
-def _run_distributed_case(*, ulysses_degree: int, allgather_degree: int) -> None:
-    world_size = ulysses_degree * allgather_degree
+def _run_distributed_case(*, ulysses_degree: int, ring_degree: int = 1, allgather_degree: int) -> None:
+    world_size = ulysses_degree * allgather_degree * ring_degree
     if current_omni_platform.get_device_count() < world_size:
         pytest.skip(f"Requires {world_size} GPUs")
 
@@ -300,6 +357,7 @@ def _run_distributed_case(*, ulysses_degree: int, allgather_degree: int) -> None
             world_size,
             get_file_store_init_method(),
             ulysses_degree,
+            ring_degree,
             allgather_degree,
         ),
         nprocs=world_size,
@@ -319,3 +377,23 @@ def test_paged_allgather_executes_native_kernel() -> None:
 @hardware_test(res={"cuda": ["L4", "B200"]}, num_cards=4)
 def test_paged_strict_ulysses_allgather_executes_native_kernel() -> None:
     _run_distributed_case(ulysses_degree=2, allgather_degree=2)
+
+
+@pytest.mark.core_model
+@pytest.mark.diffusion
+@hardware_test(
+    res={"cuda": ["L4", "B200"]},
+    num_cards=2,
+)
+def test_paged_ring_matches_dense_attention() -> None:
+    _run_distributed_case(ulysses_degree=1, allgather_degree=1, ring_degree=2)
+
+
+@pytest.mark.core_model
+@pytest.mark.diffusion
+@hardware_test(
+    res={"cuda": ["L4", "B200"]},
+    num_cards=4,
+)
+def test_paged_hybrid_ulysses_ring_matches_dense_attention() -> None:
+    _run_distributed_case(ulysses_degree=2, allgather_degree=1, ring_degree=2)
