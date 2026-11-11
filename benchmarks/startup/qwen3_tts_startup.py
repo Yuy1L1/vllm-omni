@@ -1,30 +1,23 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: Apache-2.0
 # SPDX-FileCopyrightText: Copyright contributors to the vLLM-Omni project
-"""Run a Qwen3-TTS startup attribution matrix.
+"""Qwen3-TTS startup attribution benchmark for B300/GH200 and other GPUs.
 
-Each repetition runs a cold/warm pair for every selected mode. "Cold" means an
-empty benchmark-owned TorchInductor cache; "warm" reuses the cache populated by
-that immediately preceding cold launch. vLLM, FlashInfer, Hugging Face, OS page,
-and GPU driver caches are inherited from the environment and are not cleared.
-Those effects are deliberately left visible in the raw logs instead of being
-silently attributed to compilation.
+Each selected mode runs a fresh child process for each cold and warm launch.
+The controller creates an empty TorchInductor cache for each mode/repetition,
+then reuses it for the immediately following warm launch. The accompanying
+shell wrapper also isolates vLLM and FlashInfer JIT caches per cold/warm pair.
+Running this Python file alone does NOT reset vLLM/FlashInfer caches.
 
-This script only uses the Python standard library in the controller process.
-Each measured child constructs ``Omni``, runs fixed requests, and exits.
-Every received log line gets a high-resolution controller timestamp and is
-also written as a JSONL event. The derived spans preserve stage overlap; do
-not add durations from different stages to estimate startup wall time.
+HF model files, OS page cache, and CUDA driver cache are not cleared. Therefore
+"cold" means empty benchmark-controlled compiler caches, not cold machine RAM.
+Sampling backend overrides, when supplied via environment, affect timing.
 
-Example:
-
-    python benchmarks/startup/qwen3_tts_startup.py \\
-      --repetitions 10 \\
-      --output-dir results/qwen3-tts-b300-$(date +%Y%m%d-%H%M%S)
+The controller uses only the Python standard library and does not initialize
+Torch/CUDA. It timestamps every log line on receipt and records stage-aware
+intervals that can overlap; don't add overlapping stage intervals.
 """
-
 from __future__ import annotations
-
 import argparse
 import datetime as dt
 import json
@@ -42,10 +35,9 @@ import time
 from pathlib import Path
 from typing import Any
 
-
 DEFAULT_MODEL = "Qwen/Qwen3-TTS-12Hz-1.7B-CustomVoice"
-DEFAULT_DEPLOY_CONFIG = "vllm_omni/deploy/qwen3_tts.yaml"
 
+DEFAULT_DEPLOY_CONFIG = "vllm_omni/deploy/qwen3_tts.yaml"
 # Stage 1's inner Code2Wav graph is controlled by enforce_eager, independently
 # of vLLM's CompilationConfig.cudagraph_mode. There is currently no narrower
 # deploy knob, hence the Stage-1 eager override in the no-cg ablation.
@@ -86,14 +78,13 @@ MODES: dict[str, dict[str, Any]] = {
 }
 
 STAGE_PREFIX = re.compile(r"StageEngineCoreProc_stage(?P<stage>\d+)_replica(?P<replica>\d+)")
-STAGE_RUNTIME = re.compile(r"\[StageRuntime\] Stage (?P<stage>\d+)(?: replica (?P<replica>\d+))? initialized")
-STAGE_LAUNCH = re.compile(r"Stage-(?P<stage>\d+) set runtime devices")
 
+STAGE_RUNTIME = re.compile(r"\[StageRuntime\] Stage (?P<stage>\d+)(?: replica (?P<replica>\d+))? initialized")
+
+STAGE_LAUNCH = re.compile(r"Stage-(?P<stage>\d+) set runtime devices")
 
 def _duration(pattern: str) -> re.Pattern[str]:
     return re.compile(pattern, re.IGNORECASE)
-
-
 EVENT_PATTERNS: list[tuple[str, re.Pattern[str]]] = [
     ("worker_proc_up", re.compile(r"world_size=\d+ rank=\d+")),
     ("model_load_start", re.compile(r"Starting to load model")),
@@ -110,7 +101,7 @@ EVENT_PATTERNS: list[tuple[str, re.Pattern[str]]] = [
     (
         "model_compile_done",
         _duration(
-            r"(?P<label>[\w.-]+): compiled region took (?P<duration>[\d.]+) s; "
+            r"(?P<label>[\w\.-]+): compiled region took (?P<duration>[\d.]+) s; "
             r"Inductor cache .*?: (?P<hits>\d+) hits, (?P<misses>\d+) misses, (?P<bypasses>\d+) bypasses"
         ),
     ),
@@ -142,10 +133,8 @@ EVENT_PATTERNS: list[tuple[str, re.Pattern[str]]] = [
     ),
 ]
 
-
 def utc_now() -> str:
     return dt.datetime.now(dt.timezone.utc).isoformat(timespec="milliseconds")
-
 
 def run_text(command: list[str], cwd: Path) -> str:
     try:
@@ -153,7 +142,6 @@ def run_text(command: list[str], cwd: Path) -> str:
         return (result.stdout or result.stderr).strip()
     except (OSError, subprocess.TimeoutExpired):
         return "unavailable"
-
 
 def hardware_snapshot(cwd: Path) -> dict[str, Any]:
     return {
@@ -181,7 +169,6 @@ def hardware_snapshot(cwd: Path) -> dict[str, Any]:
         "git_status_short": run_text(["git", "status", "--short"], cwd),
     }
 
-
 def stage_identity(line: str) -> tuple[int | None, int | None]:
     match = STAGE_PREFIX.search(line)
     if match:
@@ -191,7 +178,6 @@ def stage_identity(line: str) -> tuple[int | None, int | None]:
         replica = match.groupdict().get("replica")
         return int(match.group("stage")), int(replica) if replica is not None else None
     return None, None
-
 
 def classify_line(line: str) -> tuple[str | None, dict[str, Any]]:
     if line.startswith("STARTUP_BENCH_EVENT "):
@@ -229,14 +215,12 @@ def classify_line(line: str) -> tuple[str | None, dict[str, Any]]:
         return name, fields
     return None, {}
 
-
 def reader_thread(stream: Any, output: queue.Queue[str | None]) -> None:
     try:
         for line in iter(stream.readline, ""):
             output.put(line)
     finally:
         output.put(None)
-
 
 def terminate_process_group(proc: subprocess.Popen[str]) -> None:
     if proc.poll() is not None:
@@ -248,7 +232,6 @@ def terminate_process_group(proc: subprocess.Popen[str]) -> None:
         if proc.poll() is None:
             os.killpg(proc.pid, signal.SIGKILL)
             proc.wait(timeout=15)
-
 
 def measured_launch(
     *,
@@ -281,7 +264,6 @@ def measured_launch(
     timed_out = False
     child_result: dict[str, Any] | None = None
     event_count = 0
-
     with log_path.open("w", encoding="utf-8") as log_file, events_path.open("w", encoding="utf-8") as events_file:
         synthetic = {
             "event": "run_start",
@@ -313,7 +295,6 @@ def measured_launch(
             log_file.write(f"[{wall_time} +{rel_s:.6f}s] {text_line}\n")
             log_file.flush()
             print(f"[{mode}/r{repetition:02d}/{cache_state} +{rel_s:8.3f}s] {text_line}", flush=True)
-
             if text_line.startswith("STARTUP_BENCH_RESULT "):
                 try:
                     child_result = json.loads(text_line.removeprefix("STARTUP_BENCH_RESULT "))
@@ -338,7 +319,6 @@ def measured_launch(
             events_file.write(json.dumps(record, sort_keys=True) + "\n")
             events_file.flush()
             event_count += 1
-
     if proc.poll() is None:
         terminate_process_group(proc)
     thread.join(timeout=2)
@@ -358,11 +338,9 @@ def measured_launch(
         "status": "ok" if proc.returncode == 0 and child_result is not None else "failed",
     }
 
-
 def load_events(path: Path) -> list[dict[str, Any]]:
     with path.open(encoding="utf-8") as handle:
         return [json.loads(line) for line in handle if line.strip()]
-
 
 def derive_spans(run: dict[str, Any], events: list[dict[str, Any]]) -> list[dict[str, Any]]:
     spans: list[dict[str, Any]] = []
@@ -399,7 +377,6 @@ def derive_spans(run: dict[str, Any], events: list[dict[str, Any]]) -> list[dict
                     "source": "reported_duration_anchored_to_controller_receive_time",
                 }
             )
-
     # Coarse stage intervals use observed milestones. They are useful even
     # when a vLLM version does not print an exact duration for a sub-phase.
     phases = [
@@ -436,7 +413,6 @@ def derive_spans(run: dict[str, Any], events: list[dict[str, Any]]) -> list[dict
                 }
             )
     return spans
-
 
 def summarize_events(events: list[dict[str, Any]]) -> dict[str, Any]:
     compile_hits = compile_misses = compile_bypasses = 0
@@ -477,7 +453,6 @@ def summarize_events(events: list[dict[str, Any]]) -> dict[str, Any]:
         "graph_memory_observations": graph_memory,
     }
 
-
 def write_summary(
     output_dir: Path,
     metadata: dict[str, Any],
@@ -489,7 +464,6 @@ def write_summary(
     with (output_dir / "spans.jsonl").open("w", encoding="utf-8") as handle:
         for span in spans:
             handle.write(json.dumps(span, sort_keys=True) + "\n")
-
     def metric(run: dict[str, Any], name: str) -> float | None:
         if run.get("status") != "ok":
             return None
@@ -505,17 +479,16 @@ def write_summary(
             else:
                 raise ValueError(name)
         return float(value) if value is not None else None
-
     def median_text(group: list[dict[str, Any]], name: str) -> str:
         values = [value for run in group if (value := metric(run, name)) is not None]
         return f"{statistics.median(values):.3f}" if values else ""
-
     lines = [
         "# Qwen3-TTS startup matrix",
         "",
         "Cold means an empty benchmark-controlled TorchInductor cache; "
         "warm reuses the immediately preceding cold launch's caches. "
-        "vLLM, FlashInfer, HF model files, OS page, and GPU driver caches are inherited. "
+        "vLLM and FlashInfer caches are inherited from the parent (the wrapper isolates them). "
+        "HF model files, OS page cache, and GPU driver caches are inherited. "
         "Cross-stage spans may overlap and must not be added.",
         "",
         "## Aggregate across repetitions",
@@ -594,7 +567,6 @@ def write_summary(
     )
     def span_order(item: dict[str, Any]) -> tuple[Any, ...]:
         return item["repetition"], item["mode"], item["cache_state"], item["start_s"], item["stage"] or -1
-
     for span in sorted(spans, key=span_order):
         lines.append(
             f"| {span['mode']} | {span['repetition']} | {span['cache_state']} | "
@@ -604,13 +576,11 @@ def write_summary(
         )
     (output_dir / "summary.md").write_text("\n".join(lines) + "\n", encoding="utf-8")
 
-
 def child_main(args: argparse.Namespace) -> int:
     # Imports live here so the controller itself does not initialize Torch or
     # CUDA and contaminate the measured child processes.
     started = time.perf_counter()
     from vllm_omni.entrypoints.omni import Omni
-
     imports_s = time.perf_counter() - started
     print(
         "STARTUP_BENCH_EVENT "
@@ -638,7 +608,6 @@ def child_main(args: argparse.Namespace) -> int:
             + json.dumps({"event": "startup_ready", "duration_s": round(startup_s, 6)}, sort_keys=True),
             flush=True,
         )
-
         request_setup_s = 0.0
         request_times_s: list[float] = []
         if args.requests:
@@ -652,7 +621,6 @@ def child_main(args: argparse.Namespace) -> int:
             if repo_root_str not in sys.path:
                 sys.path.insert(0, repo_root_str)
             from examples.offline_inference.text_to_speech.qwen3_tts.end2end import get_custom_voice_query
-
             query = get_custom_voice_query(use_batch_sample=False)
             prompt = query.inputs
             additional = prompt.get("additional_information", {})
@@ -694,13 +662,13 @@ def child_main(args: argparse.Namespace) -> int:
             "torchinductor_cache_dir": os.environ.get("TORCHINDUCTOR_CACHE_DIR"),
             "vllm_cache_root": os.environ.get("VLLM_CACHE_ROOT"),
             "flashinfer_workspace_base": os.environ.get("FLASHINFER_WORKSPACE_BASE"),
+            "flashinfer_sampler_env": os.environ.get("VLLM_USE_FLASHINFER_SAMPLER", "unset"),
         }
         print("STARTUP_BENCH_RESULT " + json.dumps(result, sort_keys=True), flush=True)
         return 0
     finally:
         if omni is not None:
             omni.shutdown()
-
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
@@ -730,7 +698,9 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--max-new-tokens", type=int, default=64, help="fixed output-token cap for each request")
     parser.add_argument("--parallel-stage-init", action="store_true")
     parser.add_argument("--keep-going", action="store_true", help="continue after a failed launch")
-    parser.add_argument("--allow-non-b300", action="store_true", help="do not fail the hardware preflight")
+    parser.add_argument("--expected-gpu", default=None,
+                        help="Optional substring required in nvidia-smi GPU information (e.g. GH200 or B300)")
+    parser.add_argument("--allow-non-b300", action="store_true", help=argparse.SUPPRESS)
     parser.add_argument("--_child", action="store_true", help=argparse.SUPPRESS)
     parser.add_argument("--stage-overrides", default="{}", help=argparse.SUPPRESS)
     args = parser.parse_args()
@@ -744,38 +714,39 @@ def parse_args() -> argparse.Namespace:
         parser.error("--stage-init-timeout must be positive")
     return args
 
-
 def main() -> int:
     args = parse_args()
     if args._child:
         return child_main(args)
-
     repo = Path(__file__).resolve().parents[2]
     deploy_config = Path(args.deploy_config)
     if not deploy_config.is_absolute():
         deploy_config = (repo / deploy_config).resolve()
     if not deploy_config.is_file():
         raise SystemExit(f"deploy config not found: {deploy_config}")
-
+    if os.path.isabs(args.model) and not Path(args.model).is_dir():
+        raise SystemExit(f"local model directory not found: {args.model}")
     stamp = dt.datetime.now().strftime("%Y%m%d-%H%M%S")
     output_dir = Path(args.output_dir or f"startup-results/qwen3-tts-{stamp}").resolve()
     output_dir.mkdir(parents=True, exist_ok=False)
     cache_root = output_dir / "inductor-cache"
     cache_root.mkdir()
-
     hardware = hardware_snapshot(repo)
     (output_dir / "hardware.json").write_text(json.dumps(hardware, indent=2, sort_keys=True) + "\n", encoding="utf-8")
-    if not args.allow_non_b300 and "B300" not in hardware["nvidia_smi_gpus"]:
+    if args.expected_gpu and args.expected_gpu.lower() not in hardware["nvidia_smi_gpus"].lower():
         raise SystemExit(
-            f"B300 preflight failed; see {output_dir / 'hardware.json'}. "
-            "Use --allow-non-b300 only for a deliberate smoke test."
+            f"GPU preflight failed (expected {args.expected_gpu!r}); "
+            f"see {output_dir / 'hardware.json'}."
         )
-
     metadata = {
         "created_at_utc": utc_now(),
         "model": args.model,
         "deploy_config": str(deploy_config),
-        "cold_definition": "empty benchmark-owned TORCHINDUCTOR_CACHE_DIR",
+        "cold_definition": (
+            "Fresh TorchInductor cache per mode/repetition; the shell wrapper, if used, "
+            "also provides fresh VLLM_CACHE_ROOT and FLASHINFER_WORKSPACE_BASE per pair. "
+            "HF model files, OS page cache, and CUDA driver cache are not cleared."
+        ),
         "cache_root": str(cache_root),
         "cache_policy": (
             "delete each mode's TorchInductor cache at the start of every repetition; "
@@ -783,6 +754,13 @@ def main() -> int:
         ),
         "inherited_vllm_cache_root": os.environ.get("VLLM_CACHE_ROOT"),
         "inherited_flashinfer_workspace_base": os.environ.get("FLASHINFER_WORKSPACE_BASE"),
+        "flashinfer_sampler_env": os.environ.get("VLLM_USE_FLASHINFER_SAMPLER", "unset (vLLM default)"),
+        "hf_hub_offline": os.environ.get("HF_HUB_OFFLINE", "unset"),
+        "expected_gpu": args.expected_gpu,
+        "note_no_cg": (
+            "The no-cg mode also sets Stage 1 enforce_eager=True to disable its "
+            "internal Code2Wav graph: not a pure CUDA Graph-only ablation."
+        ),
         "timestamp_source": "controller receipt of unbuffered merged child stdout/stderr",
         "parallel_stage_init": args.parallel_stage_init,
         "stage_init_timeout_s": args.stage_init_timeout,
@@ -796,7 +774,6 @@ def main() -> int:
         "hardware": hardware,
     }
     (output_dir / "metadata.json").write_text(json.dumps(metadata, indent=2, sort_keys=True) + "\n", encoding="utf-8")
-
     runs: list[dict[str, Any]] = []
     all_spans: list[dict[str, Any]] = []
     script = Path(__file__).resolve()
@@ -807,7 +784,6 @@ def main() -> int:
             if inductor_cache.exists():
                 shutil.rmtree(inductor_cache)
             inductor_cache.mkdir(parents=True)
-
             for cache_state in ("cold", "warm"):
                 env = os.environ.copy()
                 env["PYTHONUNBUFFERED"] = "1"
@@ -873,11 +849,9 @@ def main() -> int:
                             file=sys.stderr,
                         )
                         break
-
     print(f"\nSummary: {output_dir / 'summary.md'}")
     print(f"Machine-readable: {output_dir / 'summary.json'}")
     return 0
-
 
 if __name__ == "__main__":
     raise SystemExit(main())
