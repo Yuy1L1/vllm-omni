@@ -1,0 +1,54 @@
+{
+  "cache_policy": "delete each mode's TorchInductor cache at the start of every repetition; cold populates it and the immediately following warm launch reuses it",
+  "cache_root": "/home/lyy/vllm-omni-startup/results/gh200/qwen3-tts-matrix-gh200-20261115-233136-045857206/r01-no-cg/inductor-cache",
+  "cold_definition": "Fresh TorchInductor cache per mode/repetition; the shell wrapper, if used, also provides fresh VLLM_CACHE_ROOT and FLASHINFER_WORKSPACE_BASE per pair. HF model files, OS page cache, and CUDA driver cache are not cleared.",
+  "created_at_utc": "2026-11-16T07:39:32.525+00:00",
+  "deploy_config": "/home/lyy/yuyi/vllm-omni/vllm_omni/deploy/qwen3_tts.yaml",
+  "execution_order": "repetition-major, then mode order, then cold followed by warm",
+  "expected_gpu": "GH200",
+  "flashinfer_sampler_env": "unset (vLLM default)",
+  "hardware": {
+    "captured_at_utc": "2026-11-16T07:39:32.404+00:00",
+    "cuda_visible_devices": "0",
+    "git_head": "64815ca631e66d24620ef1281a42a3843f71d177",
+    "git_status_short": "M benchmarks/startup/plot_qwen3_tts_single_run.py\n M benchmarks/startup/qwen3_tts_startup.py\n M benchmarks/startup/run_qwen3_tts_startup_matrix.sh\n M vllm_omni/engine/stage_engine_core_proc.py\n M vllm_omni/engine/stage_init_utils.py\n M vllm_omni/engine/stage_phase_lock.py\n M vllm_omni/worker/base.py\n M vllm_omni/worker/gpu_ar_worker.py\n M vllm_omni/worker/gpu_generation_worker.py\n M vllm_omni/worker_v2/omni_model_runner.py\n?? benchmarks/startup/INSTRUMENTATION.md\n?? benchmarks/startup/analyze_gh200_startup.py\n?? benchmarks/startup/export_startup_spans.py\n?? benchmarks/startup/plot_startup_spans.py\n?? vllm_omni/engine/startup_span.py",
+    "hostname": "mi-sky-gh200-2",
+    "nvidia_smi_compute_apps": "",
+    "nvidia_smi_gpus": "0, NVIDIA GH200 480GB, GPU-4daa78ee-10cf-92ce-cae3-fae8a05bf1fe, 97871 MiB, 595.58.03",
+    "python": "3.12.16"
+  },
+  "hf_hub_offline": "1",
+  "inherited_flashinfer_workspace_base": "/home/lyy/vllm-omni-startup/results/gh200/startup-caches/qwen3-tts-matrix-gh200-20261115-233136-045857206/r01-no-cg/flashinfer",
+  "inherited_vllm_cache_root": "/home/lyy/vllm-omni-startup/results/gh200/startup-caches/qwen3-tts-matrix-gh200-20261115-233136-045857206/r01-no-cg/vllm",
+  "mode_order": [
+    "no-cg"
+  ],
+  "model": "/home/lyy/models/Qwen3-TTS-12Hz-1.7B-CustomVoice",
+  "modes": {
+    "no-cg": {
+      "disable_torch_compile": false,
+      "meaning": "no known CUDA Graph capture; Stage 0 keeps torch.compile, while Stage 1 must use enforce_eager to disable its model-internal Code2Wav graph",
+      "stage_overrides": {
+        "0": {
+          "compilation_config": {
+            "cudagraph_mode": "NONE"
+          }
+        },
+        "1": {
+          "compilation_config": {
+            "cudagraph_mode": "NONE"
+          },
+          "enforce_eager": true
+        }
+      }
+    }
+  },
+  "note_no_cg": "The no-cg mode also sets Stage 1 enforce_eager=True to disable its internal Code2Wav graph: not a pure CUDA Graph-only ablation.",
+  "parallel_stage_init": false,
+  "repetitions": 1,
+  "request_max_new_tokens": 64,
+  "request_task": "CustomVoice; fixed repository example prompt; batch size 1",
+  "requests_per_launch": 0,
+  "stage_init_timeout_s": 900,
+  "timestamp_source": "controller receipt of unbuffered merged child stdout/stderr"
+}

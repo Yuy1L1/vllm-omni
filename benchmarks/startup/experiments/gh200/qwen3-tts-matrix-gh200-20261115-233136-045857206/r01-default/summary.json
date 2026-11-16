@@ -1,0 +1,410 @@
+{
+  "metadata": {
+    "cache_policy": "delete each mode's TorchInductor cache at the start of every repetition; cold populates it and the immediately following warm launch reuses it",
+    "cache_root": "/home/lyy/vllm-omni-startup/results/gh200/qwen3-tts-matrix-gh200-20261115-233136-045857206/r01-default/inductor-cache",
+    "cold_definition": "Fresh TorchInductor cache per mode/repetition; the shell wrapper, if used, also provides fresh VLLM_CACHE_ROOT and FLASHINFER_WORKSPACE_BASE per pair. HF model files, OS page cache, and CUDA driver cache are not cleared.",
+    "created_at_utc": "2026-11-16T07:31:36.298+00:00",
+    "deploy_config": "/home/lyy/yuyi/vllm-omni/vllm_omni/deploy/qwen3_tts.yaml",
+    "execution_order": "repetition-major, then mode order, then cold followed by warm",
+    "expected_gpu": "GH200",
+    "flashinfer_sampler_env": "unset (vLLM default)",
+    "hardware": {
+      "captured_at_utc": "2026-11-16T07:31:36.154+00:00",
+      "cuda_visible_devices": "0",
+      "git_head": "64815ca631e66d24620ef1281a42a3843f71d177",
+      "git_status_short": "M benchmarks/startup/plot_qwen3_tts_single_run.py\n M benchmarks/startup/qwen3_tts_startup.py\n M benchmarks/startup/run_qwen3_tts_startup_matrix.sh\n M vllm_omni/engine/stage_engine_core_proc.py\n M vllm_omni/engine/stage_init_utils.py\n M vllm_omni/engine/stage_phase_lock.py\n M vllm_omni/worker/base.py\n M vllm_omni/worker/gpu_ar_worker.py\n M vllm_omni/worker/gpu_generation_worker.py\n M vllm_omni/worker_v2/omni_model_runner.py\n?? benchmarks/startup/INSTRUMENTATION.md\n?? benchmarks/startup/analyze_gh200_startup.py\n?? benchmarks/startup/export_startup_spans.py\n?? benchmarks/startup/plot_startup_spans.py\n?? vllm_omni/engine/startup_span.py",
+      "hostname": "mi-sky-gh200-2",
+      "nvidia_smi_compute_apps": "GPU-4daa78ee-10cf-92ce-cae3-fae8a05bf1fe, 3789300, 3750 MiB, /home/zhen/flashdelta-b0-20261101/venv/bin/python",
+      "nvidia_smi_gpus": "0, NVIDIA GH200 480GB, GPU-4daa78ee-10cf-92ce-cae3-fae8a05bf1fe, 97871 MiB, 595.58.03",
+      "python": "3.12.16"
+    },
+    "hf_hub_offline": "1",
+    "inherited_flashinfer_workspace_base": "/home/lyy/vllm-omni-startup/results/gh200/startup-caches/qwen3-tts-matrix-gh200-20261115-233136-045857206/r01-default/flashinfer",
+    "inherited_vllm_cache_root": "/home/lyy/vllm-omni-startup/results/gh200/startup-caches/qwen3-tts-matrix-gh200-20261115-233136-045857206/r01-default/vllm",
+    "mode_order": [
+      "default"
+    ],
+    "model": "/home/lyy/models/Qwen3-TTS-12Hz-1.7B-CustomVoice",
+    "modes": {
+      "default": {
+        "disable_torch_compile": false,
+        "meaning": "repository defaults: torch.compile plus configured outer/inner CUDA Graphs",
+        "stage_overrides": {}
+      }
+    },
+    "note_no_cg": "The no-cg mode also sets Stage 1 enforce_eager=True to disable its internal Code2Wav graph: not a pure CUDA Graph-only ablation.",
+    "parallel_stage_init": false,
+    "repetitions": 1,
+    "request_max_new_tokens": 64,
+    "request_task": "CustomVoice; fixed repository example prompt; batch size 1",
+    "requests_per_launch": 0,
+    "stage_init_timeout_s": 900,
+    "timestamp_source": "controller receipt of unbuffered merged child stdout/stderr"
+  },
+  "runs": [
+    {
+      "cache_state": "cold",
+      "child_result": {
+        "engine_init_s": 302.666225,
+        "flashinfer_sampler_env": "unset",
+        "flashinfer_workspace_base": "/home/lyy/vllm-omni-startup/results/gh200/startup-caches/qwen3-tts-matrix-gh200-20261115-233136-045857206/r01-default/flashinfer",
+        "max_new_tokens": 64,
+        "model": "/home/lyy/models/Qwen3-TTS-12Hz-1.7B-CustomVoice",
+        "python_imports_s": 14.409332,
+        "request_setup_s": 0.0,
+        "request_times_s": [],
+        "stage_init_timeout_s": 900,
+        "stage_overrides": {},
+        "startup_s": 317.075647,
+        "steady_median_s": null,
+        "torch_compile_disable": null,
+        "torchinductor_cache_dir": "/home/lyy/vllm-omni-startup/results/gh200/qwen3-tts-matrix-gh200-20261115-233136-045857206/r01-default/inductor-cache/default",
+        "vllm_cache_root": "/home/lyy/vllm-omni-startup/results/gh200/startup-caches/qwen3-tts-matrix-gh200-20261115-233136-045857206/r01-default/vllm"
+      },
+      "controller_process_s": 326.688707,
+      "event_count": 39,
+      "events": "/home/lyy/vllm-omni-startup/results/gh200/qwen3-tts-matrix-gh200-20261115-233136-045857206/r01-default/default-r01-cold.events.jsonl",
+      "log": "/home/lyy/vllm-omni-startup/results/gh200/qwen3-tts-matrix-gh200-20261115-233136-045857206/r01-default/default-r01-cold.log",
+      "mode": "default",
+      "repeat_indicators": {
+        "graph_memory_observations": [
+          {
+            "event": "graph_memory_reserved",
+            "memory_gib": 0.28,
+            "replica": 0,
+            "stage": 0
+          }
+        ],
+        "hf_config_load_count_by_stage": {
+          "None": 23
+        },
+        "inductor_fxgraph_cache": {
+          "bypasses": 0,
+          "hits": 0,
+          "misses": 2
+        },
+        "worker_process_count": 2
+      },
+      "repetition": 1,
+      "returncode": 0,
+      "startup_s": 317.075647,
+      "status": "ok",
+      "timed_out": false
+    },
+    {
+      "cache_state": "warm",
+      "child_result": {
+        "engine_init_s": 126.294355,
+        "flashinfer_sampler_env": "unset",
+        "flashinfer_workspace_base": "/home/lyy/vllm-omni-startup/results/gh200/startup-caches/qwen3-tts-matrix-gh200-20261115-233136-045857206/r01-default/flashinfer",
+        "max_new_tokens": 64,
+        "model": "/home/lyy/models/Qwen3-TTS-12Hz-1.7B-CustomVoice",
+        "python_imports_s": 14.512475,
+        "request_setup_s": 0.0,
+        "request_times_s": [],
+        "stage_init_timeout_s": 900,
+        "stage_overrides": {},
+        "startup_s": 140.806944,
+        "steady_median_s": null,
+        "torch_compile_disable": null,
+        "torchinductor_cache_dir": "/home/lyy/vllm-omni-startup/results/gh200/qwen3-tts-matrix-gh200-20261115-233136-045857206/r01-default/inductor-cache/default",
+        "vllm_cache_root": "/home/lyy/vllm-omni-startup/results/gh200/startup-caches/qwen3-tts-matrix-gh200-20261115-233136-045857206/r01-default/vllm"
+      },
+      "controller_process_s": 149.319504,
+      "event_count": 39,
+      "events": "/home/lyy/vllm-omni-startup/results/gh200/qwen3-tts-matrix-gh200-20261115-233136-045857206/r01-default/default-r01-warm.events.jsonl",
+      "log": "/home/lyy/vllm-omni-startup/results/gh200/qwen3-tts-matrix-gh200-20261115-233136-045857206/r01-default/default-r01-warm.log",
+      "mode": "default",
+      "repeat_indicators": {
+        "graph_memory_observations": [
+          {
+            "event": "graph_memory_reserved",
+            "memory_gib": 0.32,
+            "replica": 0,
+            "stage": 0
+          }
+        ],
+        "hf_config_load_count_by_stage": {
+          "None": 23
+        },
+        "inductor_fxgraph_cache": {
+          "bypasses": 0,
+          "hits": 2,
+          "misses": 0
+        },
+        "worker_process_count": 2
+      },
+      "repetition": 1,
+      "returncode": 0,
+      "startup_s": 140.806944,
+      "status": "ok",
+      "timed_out": false
+    }
+  ],
+  "spans": [
+    {
+      "cache_state": "cold",
+      "duration_s": 14.409332,
+      "end_s": 14.471697,
+      "mode": "default",
+      "phase": "python_imports",
+      "repetition": 1,
+      "replica": null,
+      "source": "reported_duration_anchored_to_controller_receive_time",
+      "stage": null,
+      "start_s": 0.062365
+    },
+    {
+      "cache_state": "cold",
+      "duration_s": 51.48,
+      "end_s": 115.036581,
+      "mode": "default",
+      "phase": "weights_load",
+      "repetition": 1,
+      "replica": 0,
+      "source": "reported_duration_anchored_to_controller_receive_time",
+      "stage": 0,
+      "start_s": 63.556581
+    },
+    {
+      "cache_state": "cold",
+      "duration_s": 55.062933,
+      "end_s": 116.417508,
+      "mode": "default",
+      "phase": "model_load",
+      "repetition": 1,
+      "replica": 0,
+      "source": "reported_duration_anchored_to_controller_receive_time",
+      "stage": 0,
+      "start_s": 61.354575
+    },
+    {
+      "cache_state": "cold",
+      "duration_s": 5.0,
+      "end_s": 233.130093,
+      "mode": "default",
+      "phase": "graph_capture",
+      "repetition": 1,
+      "replica": 0,
+      "source": "reported_duration_anchored_to_controller_receive_time",
+      "stage": 0,
+      "start_s": 228.130093
+    },
+    {
+      "cache_state": "cold",
+      "duration_s": 23.6,
+      "end_s": 256.778011,
+      "mode": "default",
+      "phase": "model_compile",
+      "repetition": 1,
+      "replica": 0,
+      "source": "reported_duration_anchored_to_controller_receive_time",
+      "stage": 0,
+      "start_s": 233.178011
+    },
+    {
+      "cache_state": "cold",
+      "duration_s": 6.0,
+      "end_s": 288.245076,
+      "mode": "default",
+      "phase": "graph_capture",
+      "repetition": 1,
+      "replica": 0,
+      "source": "reported_duration_anchored_to_controller_receive_time",
+      "stage": 0,
+      "start_s": 282.245076
+    },
+    {
+      "cache_state": "cold",
+      "duration_s": 175.96,
+      "end_s": 292.743556,
+      "mode": "default",
+      "phase": "engine_init",
+      "repetition": 1,
+      "replica": 0,
+      "source": "reported_duration_anchored_to_controller_receive_time",
+      "stage": 0,
+      "start_s": 116.783556
+    },
+    {
+      "cache_state": "cold",
+      "duration_s": 2.43,
+      "end_s": 312.469211,
+      "mode": "default",
+      "phase": "weights_load",
+      "repetition": 1,
+      "replica": 0,
+      "source": "reported_duration_anchored_to_controller_receive_time",
+      "stage": 1,
+      "start_s": 310.039211
+    },
+    {
+      "cache_state": "cold",
+      "duration_s": 4.179133,
+      "end_s": 313.640978,
+      "mode": "default",
+      "phase": "model_load",
+      "repetition": 1,
+      "replica": 0,
+      "source": "reported_duration_anchored_to_controller_receive_time",
+      "stage": 1,
+      "start_s": 309.461845
+    },
+    {
+      "cache_state": "cold",
+      "duration_s": 0.06,
+      "end_s": 314.815742,
+      "mode": "default",
+      "phase": "engine_init",
+      "repetition": 1,
+      "replica": 0,
+      "source": "reported_duration_anchored_to_controller_receive_time",
+      "stage": 1,
+      "start_s": 314.755742
+    },
+    {
+      "cache_state": "cold",
+      "duration_s": 317.075647,
+      "end_s": 317.140447,
+      "mode": "default",
+      "phase": "startup_ready",
+      "repetition": 1,
+      "replica": null,
+      "source": "reported_duration_anchored_to_controller_receive_time",
+      "stage": null,
+      "start_s": 0.0648
+    },
+    {
+      "cache_state": "warm",
+      "duration_s": 14.512475,
+      "end_s": 14.5664,
+      "mode": "default",
+      "phase": "python_imports",
+      "repetition": 1,
+      "replica": null,
+      "source": "reported_duration_anchored_to_controller_receive_time",
+      "stage": null,
+      "start_s": 0.053925
+    },
+    {
+      "cache_state": "warm",
+      "duration_s": 53.86,
+      "end_s": 89.810848,
+      "mode": "default",
+      "phase": "weights_load",
+      "repetition": 1,
+      "replica": 0,
+      "source": "reported_duration_anchored_to_controller_receive_time",
+      "stage": 0,
+      "start_s": 35.950848
+    },
+    {
+      "cache_state": "warm",
+      "duration_s": 57.313931,
+      "end_s": 91.166311,
+      "mode": "default",
+      "phase": "model_load",
+      "repetition": 1,
+      "replica": 0,
+      "source": "reported_duration_anchored_to_controller_receive_time",
+      "stage": 0,
+      "start_s": 33.85238
+    },
+    {
+      "cache_state": "warm",
+      "duration_s": 5.0,
+      "end_s": 98.91554,
+      "mode": "default",
+      "phase": "graph_capture",
+      "repetition": 1,
+      "replica": 0,
+      "source": "reported_duration_anchored_to_controller_receive_time",
+      "stage": 0,
+      "start_s": 93.91554
+    },
+    {
+      "cache_state": "warm",
+      "duration_s": 3.7,
+      "end_s": 102.667021,
+      "mode": "default",
+      "phase": "model_compile",
+      "repetition": 1,
+      "replica": 0,
+      "source": "reported_duration_anchored_to_controller_receive_time",
+      "stage": 0,
+      "start_s": 98.967021
+    },
+    {
+      "cache_state": "warm",
+      "duration_s": 6.0,
+      "end_s": 113.285645,
+      "mode": "default",
+      "phase": "graph_capture",
+      "repetition": 1,
+      "replica": 0,
+      "source": "reported_duration_anchored_to_controller_receive_time",
+      "stage": 0,
+      "start_s": 107.285645
+    },
+    {
+      "cache_state": "warm",
+      "duration_s": 25.62,
+      "end_s": 117.139182,
+      "mode": "default",
+      "phase": "engine_init",
+      "repetition": 1,
+      "replica": 0,
+      "source": "reported_duration_anchored_to_controller_receive_time",
+      "stage": 0,
+      "start_s": 91.519182
+    },
+    {
+      "cache_state": "warm",
+      "duration_s": 2.5,
+      "end_s": 136.428593,
+      "mode": "default",
+      "phase": "weights_load",
+      "repetition": 1,
+      "replica": 0,
+      "source": "reported_duration_anchored_to_controller_receive_time",
+      "stage": 1,
+      "start_s": 133.928593
+    },
+    {
+      "cache_state": "warm",
+      "duration_s": 4.161688,
+      "end_s": 137.572607,
+      "mode": "default",
+      "phase": "model_load",
+      "repetition": 1,
+      "replica": 0,
+      "source": "reported_duration_anchored_to_controller_receive_time",
+      "stage": 1,
+      "start_s": 133.410919
+    },
+    {
+      "cache_state": "warm",
+      "duration_s": 0.06,
+      "end_s": 138.733389,
+      "mode": "default",
+      "phase": "engine_init",
+      "repetition": 1,
+      "replica": 0,
+      "source": "reported_duration_anchored_to_controller_receive_time",
+      "stage": 1,
+      "start_s": 138.673389
+    },
+    {
+      "cache_state": "warm",
+      "duration_s": 140.806944,
+      "end_s": 140.860744,
+      "mode": "default",
+      "phase": "startup_ready",
+      "repetition": 1,
+      "replica": null,
+      "source": "reported_duration_anchored_to_controller_receive_time",
+      "stage": null,
+      "start_s": 0.0538
+    }
+  ]
+}

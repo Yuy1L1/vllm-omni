@@ -1,0 +1,360 @@
+{
+  "metadata": {
+    "cache_policy": "delete each mode's TorchInductor cache at the start of every repetition; cold populates it and the immediately following warm launch reuses it",
+    "cache_root": "/home/lyy/vllm-omni-startup/results/gh200/qwen3-tts-matrix-gh200-20261115-233136-045857206/r01-no-cg/inductor-cache",
+    "cold_definition": "Fresh TorchInductor cache per mode/repetition; the shell wrapper, if used, also provides fresh VLLM_CACHE_ROOT and FLASHINFER_WORKSPACE_BASE per pair. HF model files, OS page cache, and CUDA driver cache are not cleared.",
+    "created_at_utc": "2026-11-16T07:39:32.525+00:00",
+    "deploy_config": "/home/lyy/yuyi/vllm-omni/vllm_omni/deploy/qwen3_tts.yaml",
+    "execution_order": "repetition-major, then mode order, then cold followed by warm",
+    "expected_gpu": "GH200",
+    "flashinfer_sampler_env": "unset (vLLM default)",
+    "hardware": {
+      "captured_at_utc": "2026-11-16T07:39:32.404+00:00",
+      "cuda_visible_devices": "0",
+      "git_head": "64815ca631e66d24620ef1281a42a3843f71d177",
+      "git_status_short": "M benchmarks/startup/plot_qwen3_tts_single_run.py\n M benchmarks/startup/qwen3_tts_startup.py\n M benchmarks/startup/run_qwen3_tts_startup_matrix.sh\n M vllm_omni/engine/stage_engine_core_proc.py\n M vllm_omni/engine/stage_init_utils.py\n M vllm_omni/engine/stage_phase_lock.py\n M vllm_omni/worker/base.py\n M vllm_omni/worker/gpu_ar_worker.py\n M vllm_omni/worker/gpu_generation_worker.py\n M vllm_omni/worker_v2/omni_model_runner.py\n?? benchmarks/startup/INSTRUMENTATION.md\n?? benchmarks/startup/analyze_gh200_startup.py\n?? benchmarks/startup/export_startup_spans.py\n?? benchmarks/startup/plot_startup_spans.py\n?? vllm_omni/engine/startup_span.py",
+      "hostname": "mi-sky-gh200-2",
+      "nvidia_smi_compute_apps": "",
+      "nvidia_smi_gpus": "0, NVIDIA GH200 480GB, GPU-4daa78ee-10cf-92ce-cae3-fae8a05bf1fe, 97871 MiB, 595.58.03",
+      "python": "3.12.16"
+    },
+    "hf_hub_offline": "1",
+    "inherited_flashinfer_workspace_base": "/home/lyy/vllm-omni-startup/results/gh200/startup-caches/qwen3-tts-matrix-gh200-20261115-233136-045857206/r01-no-cg/flashinfer",
+    "inherited_vllm_cache_root": "/home/lyy/vllm-omni-startup/results/gh200/startup-caches/qwen3-tts-matrix-gh200-20261115-233136-045857206/r01-no-cg/vllm",
+    "mode_order": [
+      "no-cg"
+    ],
+    "model": "/home/lyy/models/Qwen3-TTS-12Hz-1.7B-CustomVoice",
+    "modes": {
+      "no-cg": {
+        "disable_torch_compile": false,
+        "meaning": "no known CUDA Graph capture; Stage 0 keeps torch.compile, while Stage 1 must use enforce_eager to disable its model-internal Code2Wav graph",
+        "stage_overrides": {
+          "0": {
+            "compilation_config": {
+              "cudagraph_mode": "NONE"
+            }
+          },
+          "1": {
+            "compilation_config": {
+              "cudagraph_mode": "NONE"
+            },
+            "enforce_eager": true
+          }
+        }
+      }
+    },
+    "note_no_cg": "The no-cg mode also sets Stage 1 enforce_eager=True to disable its internal Code2Wav graph: not a pure CUDA Graph-only ablation.",
+    "parallel_stage_init": false,
+    "repetitions": 1,
+    "request_max_new_tokens": 64,
+    "request_task": "CustomVoice; fixed repository example prompt; batch size 1",
+    "requests_per_launch": 0,
+    "stage_init_timeout_s": 900,
+    "timestamp_source": "controller receipt of unbuffered merged child stdout/stderr"
+  },
+  "runs": [
+    {
+      "cache_state": "cold",
+      "child_result": {
+        "engine_init_s": 262.659043,
+        "flashinfer_sampler_env": "unset",
+        "flashinfer_workspace_base": "/home/lyy/vllm-omni-startup/results/gh200/startup-caches/qwen3-tts-matrix-gh200-20261115-233136-045857206/r01-no-cg/flashinfer",
+        "max_new_tokens": 64,
+        "model": "/home/lyy/models/Qwen3-TTS-12Hz-1.7B-CustomVoice",
+        "python_imports_s": 14.088978,
+        "request_setup_s": 0.0,
+        "request_times_s": [],
+        "stage_init_timeout_s": 900,
+        "stage_overrides": {
+          "0": {
+            "compilation_config": {
+              "cudagraph_mode": "NONE"
+            }
+          },
+          "1": {
+            "compilation_config": {
+              "cudagraph_mode": "NONE"
+            },
+            "enforce_eager": true
+          }
+        },
+        "startup_s": 276.748186,
+        "steady_median_s": null,
+        "torch_compile_disable": null,
+        "torchinductor_cache_dir": "/home/lyy/vllm-omni-startup/results/gh200/qwen3-tts-matrix-gh200-20261115-233136-045857206/r01-no-cg/inductor-cache/no-cg",
+        "vllm_cache_root": "/home/lyy/vllm-omni-startup/results/gh200/startup-caches/qwen3-tts-matrix-gh200-20261115-233136-045857206/r01-no-cg/vllm"
+      },
+      "controller_process_s": 286.018858,
+      "event_count": 35,
+      "events": "/home/lyy/vllm-omni-startup/results/gh200/qwen3-tts-matrix-gh200-20261115-233136-045857206/r01-no-cg/no-cg-r01-cold.events.jsonl",
+      "log": "/home/lyy/vllm-omni-startup/results/gh200/qwen3-tts-matrix-gh200-20261115-233136-045857206/r01-no-cg/no-cg-r01-cold.log",
+      "mode": "no-cg",
+      "repeat_indicators": {
+        "graph_memory_observations": [],
+        "hf_config_load_count_by_stage": {
+          "None": 23
+        },
+        "inductor_fxgraph_cache": {
+          "bypasses": 0,
+          "hits": 0,
+          "misses": 0
+        },
+        "worker_process_count": 2
+      },
+      "repetition": 1,
+      "returncode": 0,
+      "startup_s": 276.748186,
+      "status": "ok",
+      "timed_out": false
+    },
+    {
+      "cache_state": "warm",
+      "child_result": {
+        "engine_init_s": 108.853084,
+        "flashinfer_sampler_env": "unset",
+        "flashinfer_workspace_base": "/home/lyy/vllm-omni-startup/results/gh200/startup-caches/qwen3-tts-matrix-gh200-20261115-233136-045857206/r01-no-cg/flashinfer",
+        "max_new_tokens": 64,
+        "model": "/home/lyy/models/Qwen3-TTS-12Hz-1.7B-CustomVoice",
+        "python_imports_s": 14.082617,
+        "request_setup_s": 0.0,
+        "request_times_s": [],
+        "stage_init_timeout_s": 900,
+        "stage_overrides": {
+          "0": {
+            "compilation_config": {
+              "cudagraph_mode": "NONE"
+            }
+          },
+          "1": {
+            "compilation_config": {
+              "cudagraph_mode": "NONE"
+            },
+            "enforce_eager": true
+          }
+        },
+        "startup_s": 122.935809,
+        "steady_median_s": null,
+        "torch_compile_disable": null,
+        "torchinductor_cache_dir": "/home/lyy/vllm-omni-startup/results/gh200/qwen3-tts-matrix-gh200-20261115-233136-045857206/r01-no-cg/inductor-cache/no-cg",
+        "vllm_cache_root": "/home/lyy/vllm-omni-startup/results/gh200/startup-caches/qwen3-tts-matrix-gh200-20261115-233136-045857206/r01-no-cg/vllm"
+      },
+      "controller_process_s": 131.397235,
+      "event_count": 35,
+      "events": "/home/lyy/vllm-omni-startup/results/gh200/qwen3-tts-matrix-gh200-20261115-233136-045857206/r01-no-cg/no-cg-r01-warm.events.jsonl",
+      "log": "/home/lyy/vllm-omni-startup/results/gh200/qwen3-tts-matrix-gh200-20261115-233136-045857206/r01-no-cg/no-cg-r01-warm.log",
+      "mode": "no-cg",
+      "repeat_indicators": {
+        "graph_memory_observations": [],
+        "hf_config_load_count_by_stage": {
+          "None": 23
+        },
+        "inductor_fxgraph_cache": {
+          "bypasses": 0,
+          "hits": 0,
+          "misses": 0
+        },
+        "worker_process_count": 2
+      },
+      "repetition": 1,
+      "returncode": 0,
+      "startup_s": 122.935809,
+      "status": "ok",
+      "timed_out": false
+    }
+  ],
+  "spans": [
+    {
+      "cache_state": "cold",
+      "duration_s": 14.088978,
+      "end_s": 14.148511,
+      "mode": "no-cg",
+      "phase": "python_imports",
+      "repetition": 1,
+      "replica": null,
+      "source": "reported_duration_anchored_to_controller_receive_time",
+      "stage": null,
+      "start_s": 0.059533
+    },
+    {
+      "cache_state": "cold",
+      "duration_s": 55.71,
+      "end_s": 117.988668,
+      "mode": "no-cg",
+      "phase": "weights_load",
+      "repetition": 1,
+      "replica": 0,
+      "source": "reported_duration_anchored_to_controller_receive_time",
+      "stage": 0,
+      "start_s": 62.278668
+    },
+    {
+      "cache_state": "cold",
+      "duration_s": 59.275118,
+      "end_s": 119.368431,
+      "mode": "no-cg",
+      "phase": "model_load",
+      "repetition": 1,
+      "replica": 0,
+      "source": "reported_duration_anchored_to_controller_receive_time",
+      "stage": 0,
+      "start_s": 60.093313
+    },
+    {
+      "cache_state": "cold",
+      "duration_s": 135.79,
+      "end_s": 255.539334,
+      "mode": "no-cg",
+      "phase": "engine_init",
+      "repetition": 1,
+      "replica": 0,
+      "source": "reported_duration_anchored_to_controller_receive_time",
+      "stage": 0,
+      "start_s": 119.749334
+    },
+    {
+      "cache_state": "cold",
+      "duration_s": 0.22,
+      "end_s": 272.423758,
+      "mode": "no-cg",
+      "phase": "weights_load",
+      "repetition": 1,
+      "replica": 0,
+      "source": "reported_duration_anchored_to_controller_receive_time",
+      "stage": 1,
+      "start_s": 272.203758
+    },
+    {
+      "cache_state": "cold",
+      "duration_s": 1.899377,
+      "end_s": 273.583858,
+      "mode": "no-cg",
+      "phase": "model_load",
+      "repetition": 1,
+      "replica": 0,
+      "source": "reported_duration_anchored_to_controller_receive_time",
+      "stage": 1,
+      "start_s": 271.684481
+    },
+    {
+      "cache_state": "cold",
+      "duration_s": 0.06,
+      "end_s": 274.740408,
+      "mode": "no-cg",
+      "phase": "engine_init",
+      "repetition": 1,
+      "replica": 0,
+      "source": "reported_duration_anchored_to_controller_receive_time",
+      "stage": 1,
+      "start_s": 274.680408
+    },
+    {
+      "cache_state": "cold",
+      "duration_s": 276.748186,
+      "end_s": 276.807392,
+      "mode": "no-cg",
+      "phase": "startup_ready",
+      "repetition": 1,
+      "replica": null,
+      "source": "reported_duration_anchored_to_controller_receive_time",
+      "stage": null,
+      "start_s": 0.059206
+    },
+    {
+      "cache_state": "warm",
+      "duration_s": 14.082617,
+      "end_s": 14.136337,
+      "mode": "no-cg",
+      "phase": "python_imports",
+      "repetition": 1,
+      "replica": null,
+      "source": "reported_duration_anchored_to_controller_receive_time",
+      "stage": null,
+      "start_s": 0.05372
+    },
+    {
+      "cache_state": "warm",
+      "duration_s": 57.21,
+      "end_s": 92.366861,
+      "mode": "no-cg",
+      "phase": "weights_load",
+      "repetition": 1,
+      "replica": 0,
+      "source": "reported_duration_anchored_to_controller_receive_time",
+      "stage": 0,
+      "start_s": 35.156861
+    },
+    {
+      "cache_state": "warm",
+      "duration_s": 60.617892,
+      "end_s": 93.691562,
+      "mode": "no-cg",
+      "phase": "model_load",
+      "repetition": 1,
+      "replica": 0,
+      "source": "reported_duration_anchored_to_controller_receive_time",
+      "stage": 0,
+      "start_s": 33.07367
+    },
+    {
+      "cache_state": "warm",
+      "duration_s": 7.31,
+      "end_s": 101.376657,
+      "mode": "no-cg",
+      "phase": "engine_init",
+      "repetition": 1,
+      "replica": 0,
+      "source": "reported_duration_anchored_to_controller_receive_time",
+      "stage": 0,
+      "start_s": 94.066657
+    },
+    {
+      "cache_state": "warm",
+      "duration_s": 0.23,
+      "end_s": 118.268095,
+      "mode": "no-cg",
+      "phase": "weights_load",
+      "repetition": 1,
+      "replica": 0,
+      "source": "reported_duration_anchored_to_controller_receive_time",
+      "stage": 1,
+      "start_s": 118.038095
+    },
+    {
+      "cache_state": "warm",
+      "duration_s": 1.934492,
+      "end_s": 119.483716,
+      "mode": "no-cg",
+      "phase": "model_load",
+      "repetition": 1,
+      "replica": 0,
+      "source": "reported_duration_anchored_to_controller_receive_time",
+      "stage": 1,
+      "start_s": 117.549224
+    },
+    {
+      "cache_state": "warm",
+      "duration_s": 0.08,
+      "end_s": 120.900489,
+      "mode": "no-cg",
+      "phase": "engine_init",
+      "repetition": 1,
+      "replica": 0,
+      "source": "reported_duration_anchored_to_controller_receive_time",
+      "stage": 1,
+      "start_s": 120.820489
+    },
+    {
+      "cache_state": "warm",
+      "duration_s": 122.935809,
+      "end_s": 122.989849,
+      "mode": "no-cg",
+      "phase": "startup_ready",
+      "repetition": 1,
+      "replica": null,
+      "source": "reported_duration_anchored_to_controller_receive_time",
+      "stage": null,
+      "start_s": 0.05404
+    }
+  ]
+}

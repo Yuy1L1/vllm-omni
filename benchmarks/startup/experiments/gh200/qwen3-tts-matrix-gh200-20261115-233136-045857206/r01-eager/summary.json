@@ -1,0 +1,363 @@
+{
+  "metadata": {
+    "cache_policy": "delete each mode's TorchInductor cache at the start of every repetition; cold populates it and the immediately following warm launch reuses it",
+    "cache_root": "/home/lyy/vllm-omni-startup/results/gh200/qwen3-tts-matrix-gh200-20261115-233136-045857206/r01-eager/inductor-cache",
+    "cold_definition": "Fresh TorchInductor cache per mode/repetition; the shell wrapper, if used, also provides fresh VLLM_CACHE_ROOT and FLASHINFER_WORKSPACE_BASE per pair. HF model files, OS page cache, and CUDA driver cache are not cleared.",
+    "created_at_utc": "2026-11-16T07:46:30.233+00:00",
+    "deploy_config": "/home/lyy/yuyi/vllm-omni/vllm_omni/deploy/qwen3_tts.yaml",
+    "execution_order": "repetition-major, then mode order, then cold followed by warm",
+    "expected_gpu": "GH200",
+    "flashinfer_sampler_env": "unset (vLLM default)",
+    "hardware": {
+      "captured_at_utc": "2026-11-16T07:46:30.055+00:00",
+      "cuda_visible_devices": "0",
+      "git_head": "64815ca631e66d24620ef1281a42a3843f71d177",
+      "git_status_short": "M benchmarks/startup/plot_qwen3_tts_single_run.py\n M benchmarks/startup/qwen3_tts_startup.py\n M benchmarks/startup/run_qwen3_tts_startup_matrix.sh\n M vllm_omni/engine/stage_engine_core_proc.py\n M vllm_omni/engine/stage_init_utils.py\n M vllm_omni/engine/stage_phase_lock.py\n M vllm_omni/worker/base.py\n M vllm_omni/worker/gpu_ar_worker.py\n M vllm_omni/worker/gpu_generation_worker.py\n M vllm_omni/worker_v2/omni_model_runner.py\n?? benchmarks/startup/INSTRUMENTATION.md\n?? benchmarks/startup/analyze_gh200_startup.py\n?? benchmarks/startup/export_startup_spans.py\n?? benchmarks/startup/plot_startup_spans.py\n?? vllm_omni/engine/startup_span.py",
+      "hostname": "mi-sky-gh200-2",
+      "nvidia_smi_compute_apps": "",
+      "nvidia_smi_gpus": "0, NVIDIA GH200 480GB, GPU-4daa78ee-10cf-92ce-cae3-fae8a05bf1fe, 97871 MiB, 595.58.03",
+      "python": "3.12.16"
+    },
+    "hf_hub_offline": "1",
+    "inherited_flashinfer_workspace_base": "/home/lyy/vllm-omni-startup/results/gh200/startup-caches/qwen3-tts-matrix-gh200-20261115-233136-045857206/r01-eager/flashinfer",
+    "inherited_vllm_cache_root": "/home/lyy/vllm-omni-startup/results/gh200/startup-caches/qwen3-tts-matrix-gh200-20261115-233136-045857206/r01-eager/vllm",
+    "mode_order": [
+      "eager"
+    ],
+    "model": "/home/lyy/models/Qwen3-TTS-12Hz-1.7B-CustomVoice",
+    "modes": {
+      "eager": {
+        "disable_torch_compile": true,
+        "meaning": "enforce_eager on both stages and TORCH_COMPILE_DISABLE=1 for model-local compile calls",
+        "stage_overrides": {
+          "0": {
+            "compilation_config": {
+              "cudagraph_mode": "NONE"
+            },
+            "enforce_eager": true
+          },
+          "1": {
+            "compilation_config": {
+              "cudagraph_mode": "NONE"
+            },
+            "enforce_eager": true
+          }
+        }
+      }
+    },
+    "note_no_cg": "The no-cg mode also sets Stage 1 enforce_eager=True to disable its internal Code2Wav graph: not a pure CUDA Graph-only ablation.",
+    "parallel_stage_init": false,
+    "repetitions": 1,
+    "request_max_new_tokens": 64,
+    "request_task": "CustomVoice; fixed repository example prompt; batch size 1",
+    "requests_per_launch": 0,
+    "stage_init_timeout_s": 900,
+    "timestamp_source": "controller receipt of unbuffered merged child stdout/stderr"
+  },
+  "runs": [
+    {
+      "cache_state": "cold",
+      "child_result": {
+        "engine_init_s": 198.939565,
+        "flashinfer_sampler_env": "unset",
+        "flashinfer_workspace_base": "/home/lyy/vllm-omni-startup/results/gh200/startup-caches/qwen3-tts-matrix-gh200-20261115-233136-045857206/r01-eager/flashinfer",
+        "max_new_tokens": 64,
+        "model": "/home/lyy/models/Qwen3-TTS-12Hz-1.7B-CustomVoice",
+        "python_imports_s": 13.97257,
+        "request_setup_s": 0.0,
+        "request_times_s": [],
+        "stage_init_timeout_s": 900,
+        "stage_overrides": {
+          "0": {
+            "compilation_config": {
+              "cudagraph_mode": "NONE"
+            },
+            "enforce_eager": true
+          },
+          "1": {
+            "compilation_config": {
+              "cudagraph_mode": "NONE"
+            },
+            "enforce_eager": true
+          }
+        },
+        "startup_s": 212.912258,
+        "steady_median_s": null,
+        "torch_compile_disable": "1",
+        "torchinductor_cache_dir": "/home/lyy/vllm-omni-startup/results/gh200/qwen3-tts-matrix-gh200-20261115-233136-045857206/r01-eager/inductor-cache/eager",
+        "vllm_cache_root": "/home/lyy/vllm-omni-startup/results/gh200/startup-caches/qwen3-tts-matrix-gh200-20261115-233136-045857206/r01-eager/vllm"
+      },
+      "controller_process_s": 221.026957,
+      "event_count": 35,
+      "events": "/home/lyy/vllm-omni-startup/results/gh200/qwen3-tts-matrix-gh200-20261115-233136-045857206/r01-eager/eager-r01-cold.events.jsonl",
+      "log": "/home/lyy/vllm-omni-startup/results/gh200/qwen3-tts-matrix-gh200-20261115-233136-045857206/r01-eager/eager-r01-cold.log",
+      "mode": "eager",
+      "repeat_indicators": {
+        "graph_memory_observations": [],
+        "hf_config_load_count_by_stage": {
+          "None": 23
+        },
+        "inductor_fxgraph_cache": {
+          "bypasses": 0,
+          "hits": 0,
+          "misses": 0
+        },
+        "worker_process_count": 2
+      },
+      "repetition": 1,
+      "returncode": 0,
+      "startup_s": 212.912258,
+      "status": "ok",
+      "timed_out": false
+    },
+    {
+      "cache_state": "warm",
+      "child_result": {
+        "engine_init_s": 104.640289,
+        "flashinfer_sampler_env": "unset",
+        "flashinfer_workspace_base": "/home/lyy/vllm-omni-startup/results/gh200/startup-caches/qwen3-tts-matrix-gh200-20261115-233136-045857206/r01-eager/flashinfer",
+        "max_new_tokens": 64,
+        "model": "/home/lyy/models/Qwen3-TTS-12Hz-1.7B-CustomVoice",
+        "python_imports_s": 14.419814,
+        "request_setup_s": 0.0,
+        "request_times_s": [],
+        "stage_init_timeout_s": 900,
+        "stage_overrides": {
+          "0": {
+            "compilation_config": {
+              "cudagraph_mode": "NONE"
+            },
+            "enforce_eager": true
+          },
+          "1": {
+            "compilation_config": {
+              "cudagraph_mode": "NONE"
+            },
+            "enforce_eager": true
+          }
+        },
+        "startup_s": 119.060287,
+        "steady_median_s": null,
+        "torch_compile_disable": "1",
+        "torchinductor_cache_dir": "/home/lyy/vllm-omni-startup/results/gh200/qwen3-tts-matrix-gh200-20261115-233136-045857206/r01-eager/inductor-cache/eager",
+        "vllm_cache_root": "/home/lyy/vllm-omni-startup/results/gh200/startup-caches/qwen3-tts-matrix-gh200-20261115-233136-045857206/r01-eager/vllm"
+      },
+      "controller_process_s": 127.031716,
+      "event_count": 35,
+      "events": "/home/lyy/vllm-omni-startup/results/gh200/qwen3-tts-matrix-gh200-20261115-233136-045857206/r01-eager/eager-r01-warm.events.jsonl",
+      "log": "/home/lyy/vllm-omni-startup/results/gh200/qwen3-tts-matrix-gh200-20261115-233136-045857206/r01-eager/eager-r01-warm.log",
+      "mode": "eager",
+      "repeat_indicators": {
+        "graph_memory_observations": [],
+        "hf_config_load_count_by_stage": {
+          "None": 23
+        },
+        "inductor_fxgraph_cache": {
+          "bypasses": 0,
+          "hits": 0,
+          "misses": 0
+        },
+        "worker_process_count": 2
+      },
+      "repetition": 1,
+      "returncode": 0,
+      "startup_s": 119.060287,
+      "status": "ok",
+      "timed_out": false
+    }
+  ],
+  "spans": [
+    {
+      "cache_state": "cold",
+      "duration_s": 13.97257,
+      "end_s": 14.024713,
+      "mode": "eager",
+      "phase": "python_imports",
+      "repetition": 1,
+      "replica": null,
+      "source": "reported_duration_anchored_to_controller_receive_time",
+      "stage": null,
+      "start_s": 0.052143
+    },
+    {
+      "cache_state": "cold",
+      "duration_s": 54.05,
+      "end_s": 116.351671,
+      "mode": "eager",
+      "phase": "weights_load",
+      "repetition": 1,
+      "replica": 0,
+      "source": "reported_duration_anchored_to_controller_receive_time",
+      "stage": 0,
+      "start_s": 62.301671
+    },
+    {
+      "cache_state": "cold",
+      "duration_s": 57.373363,
+      "end_s": 117.684321,
+      "mode": "eager",
+      "phase": "model_load",
+      "repetition": 1,
+      "replica": 0,
+      "source": "reported_duration_anchored_to_controller_receive_time",
+      "stage": 0,
+      "start_s": 60.310958
+    },
+    {
+      "cache_state": "cold",
+      "duration_s": 73.51,
+      "end_s": 191.571046,
+      "mode": "eager",
+      "phase": "engine_init",
+      "repetition": 1,
+      "replica": 0,
+      "source": "reported_duration_anchored_to_controller_receive_time",
+      "stage": 0,
+      "start_s": 118.061046
+    },
+    {
+      "cache_state": "cold",
+      "duration_s": 0.22,
+      "end_s": 208.419985,
+      "mode": "eager",
+      "phase": "weights_load",
+      "repetition": 1,
+      "replica": 0,
+      "source": "reported_duration_anchored_to_controller_receive_time",
+      "stage": 1,
+      "start_s": 208.199985
+    },
+    {
+      "cache_state": "cold",
+      "duration_s": 1.919862,
+      "end_s": 209.62213,
+      "mode": "eager",
+      "phase": "model_load",
+      "repetition": 1,
+      "replica": 0,
+      "source": "reported_duration_anchored_to_controller_receive_time",
+      "stage": 1,
+      "start_s": 207.702268
+    },
+    {
+      "cache_state": "cold",
+      "duration_s": 0.07,
+      "end_s": 210.838607,
+      "mode": "eager",
+      "phase": "engine_init",
+      "repetition": 1,
+      "replica": 0,
+      "source": "reported_duration_anchored_to_controller_receive_time",
+      "stage": 1,
+      "start_s": 210.768607
+    },
+    {
+      "cache_state": "cold",
+      "duration_s": 212.912258,
+      "end_s": 212.964447,
+      "mode": "eager",
+      "phase": "startup_ready",
+      "repetition": 1,
+      "replica": null,
+      "source": "reported_duration_anchored_to_controller_receive_time",
+      "stage": null,
+      "start_s": 0.052189
+    },
+    {
+      "cache_state": "warm",
+      "duration_s": 14.419814,
+      "end_s": 14.478791,
+      "mode": "eager",
+      "phase": "python_imports",
+      "repetition": 1,
+      "replica": null,
+      "source": "reported_duration_anchored_to_controller_receive_time",
+      "stage": null,
+      "start_s": 0.058977
+    },
+    {
+      "cache_state": "warm",
+      "duration_s": 56.22,
+      "end_s": 91.93795,
+      "mode": "eager",
+      "phase": "weights_load",
+      "repetition": 1,
+      "replica": 0,
+      "source": "reported_duration_anchored_to_controller_receive_time",
+      "stage": 0,
+      "start_s": 35.71795
+    },
+    {
+      "cache_state": "warm",
+      "duration_s": 59.660393,
+      "end_s": 93.337944,
+      "mode": "eager",
+      "phase": "model_load",
+      "repetition": 1,
+      "replica": 0,
+      "source": "reported_duration_anchored_to_controller_receive_time",
+      "stage": 0,
+      "start_s": 33.677551
+    },
+    {
+      "cache_state": "warm",
+      "duration_s": 4.57,
+      "end_s": 98.280428,
+      "mode": "eager",
+      "phase": "engine_init",
+      "repetition": 1,
+      "replica": 0,
+      "source": "reported_duration_anchored_to_controller_receive_time",
+      "stage": 0,
+      "start_s": 93.710428
+    },
+    {
+      "cache_state": "warm",
+      "duration_s": 0.2,
+      "end_s": 114.73335,
+      "mode": "eager",
+      "phase": "weights_load",
+      "repetition": 1,
+      "replica": 0,
+      "source": "reported_duration_anchored_to_controller_receive_time",
+      "stage": 1,
+      "start_s": 114.53335
+    },
+    {
+      "cache_state": "warm",
+      "duration_s": 1.838554,
+      "end_s": 115.88151,
+      "mode": "eager",
+      "phase": "model_load",
+      "repetition": 1,
+      "replica": 0,
+      "source": "reported_duration_anchored_to_controller_receive_time",
+      "stage": 1,
+      "start_s": 114.042956
+    },
+    {
+      "cache_state": "warm",
+      "duration_s": 0.07,
+      "end_s": 117.069845,
+      "mode": "eager",
+      "phase": "engine_init",
+      "repetition": 1,
+      "replica": 0,
+      "source": "reported_duration_anchored_to_controller_receive_time",
+      "stage": 1,
+      "start_s": 116.999845
+    },
+    {
+      "cache_state": "warm",
+      "duration_s": 119.060287,
+      "end_s": 119.119438,
+      "mode": "eager",
+      "phase": "startup_ready",
+      "repetition": 1,
+      "replica": null,
+      "source": "reported_duration_anchored_to_controller_receive_time",
+      "stage": null,
+      "start_s": 0.059151
+    }
+  ]
+}

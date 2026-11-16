@@ -1,0 +1,4 @@
+repetition	mode	status	result_dir	cache_root
+1	default	ok	/home/lyy/vllm-omni-startup/results/gh200/qwen3-tts-matrix-gh200-20261115-233136-045857206/r01-default	/home/lyy/vllm-omni-startup/results/gh200/startup-caches/qwen3-tts-matrix-gh200-20261115-233136-045857206/r01-default
+1	no-cg	ok	/home/lyy/vllm-omni-startup/results/gh200/qwen3-tts-matrix-gh200-20261115-233136-045857206/r01-no-cg	/home/lyy/vllm-omni-startup/results/gh200/startup-caches/qwen3-tts-matrix-gh200-20261115-233136-045857206/r01-no-cg
+1	eager	ok	/home/lyy/vllm-omni-startup/results/gh200/qwen3-tts-matrix-gh200-20261115-233136-045857206/r01-eager	/home/lyy/vllm-omni-startup/results/gh200/startup-caches/qwen3-tts-matrix-gh200-20261115-233136-045857206/r01-eager

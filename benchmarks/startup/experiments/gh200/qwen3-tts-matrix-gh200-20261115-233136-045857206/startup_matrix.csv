@@ -1,0 +1,7 @@
+repetition,mode,cache,sampler,startup_s,first_request_s,steady_median_s
+1,default,cold,unset,317.075647,,
+1,default,warm,unset,140.806944,,
+1,no-cg,cold,unset,276.748186,,
+1,no-cg,warm,unset,122.935809,,
+1,eager,cold,unset,212.912258,,
+1,eager,warm,unset,119.060287,,

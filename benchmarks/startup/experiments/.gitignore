@@ -1,0 +1,5 @@
+# Intentionally archived experiment artifacts only.
+!*.json
+!*.jsonl
+!*.csv
+!*.log
