@@ -102,7 +102,7 @@ def collect(source_dirs: dict[str, Path]) -> list[dict[str, Any]]:
         summary = json.loads((source_dirs[mode] / "summary.json").read_text())
         run_by_cache = {run["cache_state"]: run for run in summary["runs"]}
         for cache_state in CACHE_STATES:
-            events_path = source_dirs[mode] / f"{mode}-{cache_state}.events.jsonl"
+            events_path = source_dirs[mode] / f"{mode}-r01-{cache_state}.events.jsonl"
             startup_s, durations = partition_startup(load_jsonl(events_path))
             child = run_by_cache[cache_state]["child_result"]
             request_times = child.get("request_times_s") or []
@@ -156,7 +156,7 @@ def draw_png(path: Path, rows: list[dict[str, Any]]) -> None:
     draw.text((65, 28), "Qwen3-TTS startup wall-clock attribution", fill="#222222", font=font(26, True))
     draw.text(
         (65, 65),
-        "Single retained launch per bar on one B300 (physical GPU 6)",
+        "Single retained launch per bar on GH200 (node 2)",
         fill="#555555",
         font=font(16),
     )

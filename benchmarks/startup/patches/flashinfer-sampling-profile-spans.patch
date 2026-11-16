@@ -1,0 +1,34 @@
+--- a/flashinfer/jit/core.py
++++ b/flashinfer/jit/core.py
+@@ -32,6 +32,14 @@
+ # which may be read-only after installation
+ 
+ 
++def _sampling_startup_span(spec, name, **metadata):
++    if spec.name != "sampling" or not os.environ.get("VLLM_OMNI_STARTUP_TRACE_DIR"):
++        return nullcontext()
++    from vllm_omni.engine.startup_span import profile_detail_span
++
++    return profile_detail_span(name, module=spec.name, **metadata)
++
++
+ class MissingJITCacheError(RuntimeError):
+     """
+     Exception raised when JIT compilation is disabled and the JIT cache
+@@ -596,10 +604,14 @@
+                     "first use.",
+                     self.name,
+                 )
+-            run_ninja(self.build_dir, self.ninja_path, verbose)
++            with _sampling_startup_span(
++                self, "flashinfer_sampling_ninja", artifact_missing=is_cold_build
++            ):
++                run_ninja(self.build_dir, self.ninja_path, verbose)
+ 
+     def load(self, so_path: Optional[Path] = None):
+-        module = tvm_ffi.load_module(str(so_path or self.jit_library_path))
++        with _sampling_startup_span(self, "flashinfer_sampling_load"):
++            module = tvm_ffi.load_module(str(so_path or self.jit_library_path))
+         if self.post_load_adapter is not None:
+             return self.post_load_adapter(module)
+         return module

@@ -22,7 +22,7 @@ SCRIPT_DIR=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
 REPO_ROOT=$(cd -- "$SCRIPT_DIR/../.." && pwd)
 STARTUP_ENV=${STARTUP_ENV:-${CONDA_PREFIX:-}}
 RESULTS_BASE=${RESULTS_BASE:-$REPO_ROOT/results}
-CACHE_BASE=${CACHE_BASE:-${TMPDIR:-/tmp}/vllm-omni-startup-caches}
+CACHE_BASE=${CACHE_BASE:-$RESULTS_BASE/startup-caches}
 GPU_TAG=${GPU_TAG:-$(hostname -s)}
 EXPECTED_GPU=${EXPECTED_GPU:-}  # Optional, e.g. GH200 or B300
 MODEL_PATH=${MODEL_PATH:-Qwen/Qwen3-TTS-12Hz-1.7B-CustomVoice}
@@ -122,6 +122,7 @@ cd "$REPO_ROOT"
 RESULT_TAG=$(date +%Y%m%d-%H%M%S-%N)
 BATCH_RESULT_DIR="$RESULTS_BASE/qwen3-tts-matrix-${GPU_TAG}-$RESULT_TAG"
 RUN_CACHE_BASE="$CACHE_BASE/qwen3-tts-matrix-${GPU_TAG}-$RESULT_TAG"
+STARTUP_TRACE_BASE=${VLLM_OMNI_STARTUP_TRACE_DIR:-$BATCH_RESULT_DIR/startup-spans}
 mkdir -p "$BATCH_RESULT_DIR" "$RUN_CACHE_BASE"
 
 MANIFEST="$BATCH_RESULT_DIR/manifest.tsv"
@@ -143,6 +144,7 @@ max_new_tokens=$MAX_NEW_TOKENS
 stage_init_timeout=$STAGE_INIT_TIMEOUT
 launch_timeout=$LAUNCH_TIMEOUT
 keep_startup_caches=$KEEP_STARTUP_CACHES
+startup_trace_base=$STARTUP_TRACE_BASE
 cache_policy=fresh vLLM + FlashInfer + TorchInductor for cold; immediate warm reuses them
 out_of_scope_cache=Hugging Face models, OS page cache, CUDA driver cache
 warning_no_cg=Stage 1 enforce_eager is set; no-cg is not a pure CUDA Graph-only ablation
@@ -150,6 +152,7 @@ EOF
 
 echo "Results: $BATCH_RESULT_DIR"
 echo "Startup caches: $RUN_CACHE_BASE"
+echo "Startup spans: $STARTUP_TRACE_BASE"
 echo "GPU tag: $GPU_TAG; CUDA_VISIBLE_DEVICES=$CUDA_VISIBLE_DEVICES"
 echo "Model: $MODEL_PATH"
 echo "FlashInfer sampler: ${VLLM_USE_FLASHINFER_SAMPLER:-unset (vLLM default)}"
@@ -179,6 +182,7 @@ for ((repetition = 1; repetition <= REPETITIONS; repetition++)); do
         repetition_label=$(printf 'r%02d' "$repetition")
         current_result="$BATCH_RESULT_DIR/$repetition_label-$mode"
         current_cache="$RUN_CACHE_BASE/$repetition_label-$mode"
+        export VLLM_OMNI_STARTUP_TRACE_DIR="$STARTUP_TRACE_BASE/$repetition_label-$mode"
 
         if [[ -e "$current_cache" ]]; then
             echo "Refusing to reuse existing cold cache path: $current_cache" >&2

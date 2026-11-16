@@ -245,6 +245,11 @@ def measured_launch(
     cache_state: str,
     timeout_s: float,
 ) -> dict[str, Any]:
+    env = dict(env)
+    trace_root = env.get("VLLM_OMNI_STARTUP_TRACE_DIR")
+    if trace_root:
+        trace_dir = Path(trace_root).resolve() / f"{mode}-r{repetition:02d}-{cache_state}"
+        env["VLLM_OMNI_STARTUP_TRACE_DIR"] = str(trace_dir)
     started_ns = time.perf_counter_ns()
     proc = subprocess.Popen(
         command,
@@ -267,6 +272,8 @@ def measured_launch(
     with log_path.open("w", encoding="utf-8") as log_file, events_path.open("w", encoding="utf-8") as events_file:
         synthetic = {
             "event": "run_start",
+            "start_ns": started_ns,
+            "startup_trace_dir": env.get("VLLM_OMNI_STARTUP_TRACE_DIR"),
             "mode": mode,
             "repetition": repetition,
             "cache_state": cache_state,

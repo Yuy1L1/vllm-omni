@@ -40,6 +40,7 @@ from vllm_omni.engine.stage_init_utils import (
     maybe_apply_cfg_scheduler_patches,
     set_death_signal,
 )
+from vllm_omni.engine.startup_span import trace_startup
 from vllm_omni.platforms import current_omni_platform
 
 logger = init_logger(__name__)
@@ -151,6 +152,10 @@ class StageEngineCoreProc(EngineCoreProc):
         _bind_first_audio_sink(self.model_executor, self.output_queue, self.scheduler)
         if _bind_native_data_plane_ready_sink(self.model_executor, self.scheduler):
             logger.info("Bound native MRv2 connector readiness directly to the scheduler inbox.")
+
+    @trace_startup("kv_cache_init", scope="core_config_profile_allocate_warmup")
+    def _initialize_kv_caches(self, vllm_config):
+        return super()._initialize_kv_caches(vllm_config)
 
     def _handle_client_request(self, request_type: EngineCoreRequestType, request: Any) -> None:
         super()._handle_client_request(request_type, request)
@@ -293,6 +298,14 @@ class StageEngineCoreProc(EngineCoreProc):
             # orchestrator. See vllm_omni.engine.stage_phase_lock.
             if omni_parallel_stage_init:
                 _install_phase_locks(kwargs, local_dp_rank)
+
+            if os.environ.get("VLLM_OMNI_STARTUP_TRACE_DIR"):
+                from vllm_omni.engine.startup_span import trace_core_kv_helpers, traced_executor
+
+                trace_core_kv_helpers(_vllm_engine_core_module, omni_stage_id, omni_replica_id)
+                kwargs["executor_class"] = traced_executor(
+                    kwargs["executor_class"], omni_stage_id, omni_replica_id
+                )
 
             engine_core = StageEngineCoreProc(
                 *args,

@@ -1,0 +1,234 @@
+--- a/vllm/v1/worker/gpu/model_runner.py
++++ b/vllm/v1/worker/gpu/model_runner.py
+@@ -18,9 +18,10 @@
+ 
+ import functools
+ import gc
++import os
+ import time
+ from collections.abc import Iterable
+-from contextlib import AbstractContextManager
++from contextlib import AbstractContextManager, nullcontext
+ from copy import deepcopy
+ from dataclasses import replace
+ from typing import Any, NamedTuple
+@@ -196,6 +197,14 @@
+ logger = init_logger(__name__)
+ 
+ 
++def _startup_profile_span(name, **metadata):
++    if not os.environ.get("VLLM_OMNI_STARTUP_TRACE_DIR"):
++        return nullcontext()
++    from vllm_omni.engine.startup_span import profile_detail_span
++
++    return profile_detail_span(name, **metadata)
++
++
+ class GPUModelRunner(LoRAModelRunnerMixin):
+     def __init__(self, vllm_config: VllmConfig, device: torch.device):
+         self.vllm_config = vllm_config
+@@ -854,61 +863,62 @@
+                 "skip_attn must only be True for initial memory profiling."
+             )
+ 
+-        # Create a dummy scheduler output. Standalone AR speculation adds
+-        # one correction slot per request during prefill. The scheduler
+-        # accounts for these slots, while dummy runs bypass the scheduler.
+-        # Adjust the dummy token count only when the expanded draft batch
+-        # would exceed the token budget.
+-        num_reqs = min(num_tokens, self.max_num_reqs)
+-        if uniform_decode:
+-            # HACK(lucas): for now since the worker is shared between MRV1 and MRV2,
+-            # and for spec-decode with MTP we want to make sure the dummy runs use
+-            # 1+num_speculative_tokens we use max here, this will likely be eventually
+-            # changed in the worker: https://github.com/vllm-project/vllm/pull/35243
+-            num_tokens = max(num_tokens, self.decode_query_len)
+-            num_reqs = num_tokens // self.decode_query_len
+-            assert num_tokens % self.decode_query_len == 0
+-        elif self.speculator is not None:
+-            num_reqs = min(
+-                num_reqs, self.max_num_tokens // self.speculator.num_query_per_req
+-            )
+-            num_tokens = min(
+-                num_tokens,
+-                self.max_num_tokens
+-                - num_reqs * self.speculator.num_extra_query_per_req,
+-            )
+-
+-        assert num_tokens <= self.max_num_tokens, (
+-            f"Dummy run with {num_tokens} tokens exceeds max_num_batched_tokens "
+-            f"({self.max_num_tokens})"
+-        )
+-
+-        # Distribute the remainder evenly so no dummy request exceeds
+-        # ceil(num_tokens / num_reqs) <= max_model_len tokens.
+-
+-        num_tokens_per_request = [
+-            num_tokens // num_reqs + (i >= num_reqs - num_tokens % num_reqs)
+-            for i in range(num_reqs)
+-        ]
+-
+-        assert sum(num_tokens_per_request) == num_tokens
+-        num_scheduled_tokens = {
+-            f"_dummy_req_{i}": n for i, n in enumerate(num_tokens_per_request)
+-        }
+-        dummy_scheduler_output = SchedulerOutput.make_empty()
+-        dummy_scheduler_output.total_num_scheduled_tokens = num_tokens
+-        dummy_scheduler_output.num_scheduled_tokens = num_scheduled_tokens
+-
+-        # Disable any use of KVConnector for dummy runs.
+-        self.kv_connector.set_disabled(True)
+-
+-        # Get the intermediate tensors for the dummy run.
+-        intermediate_tensors = None
+-        if not self.is_first_pp_rank:
+-            assert self.intermediate_tensors is not None
+-            intermediate_tensors = self.intermediate_tensors[:num_tokens]
+-
+-        max_loras = self.lora_config.max_loras if self.lora_config is not None else 0
++        with _startup_profile_span("profile_dummy_scheduler_prepare"):
++            # Create a dummy scheduler output. Standalone AR speculation adds
++            # one correction slot per request during prefill. The scheduler
++            # accounts for these slots, while dummy runs bypass the scheduler.
++            # Adjust the dummy token count only when the expanded draft batch
++            # would exceed the token budget.
++            num_reqs = min(num_tokens, self.max_num_reqs)
++            if uniform_decode:
++                # HACK(lucas): for now since the worker is shared between MRV1 and MRV2,
++                # and for spec-decode with MTP we want to make sure the dummy runs use
++                # 1+num_speculative_tokens we use max here, this will likely be eventually
++                # changed in the worker: https://github.com/vllm-project/vllm/pull/35243
++                num_tokens = max(num_tokens, self.decode_query_len)
++                num_reqs = num_tokens // self.decode_query_len
++                assert num_tokens % self.decode_query_len == 0
++            elif self.speculator is not None:
++                num_reqs = min(
++                    num_reqs, self.max_num_tokens // self.speculator.num_query_per_req
++                )
++                num_tokens = min(
++                    num_tokens,
++                    self.max_num_tokens
++                    - num_reqs * self.speculator.num_extra_query_per_req,
++                )
++
++            assert num_tokens <= self.max_num_tokens, (
++                f"Dummy run with {num_tokens} tokens exceeds max_num_batched_tokens "
++                f"({self.max_num_tokens})"
++            )
++
++            # Distribute the remainder evenly so no dummy request exceeds
++            # ceil(num_tokens / num_reqs) <= max_model_len tokens.
++
++            num_tokens_per_request = [
++                num_tokens // num_reqs + (i >= num_reqs - num_tokens % num_reqs)
++                for i in range(num_reqs)
++            ]
++
++            assert sum(num_tokens_per_request) == num_tokens
++            num_scheduled_tokens = {
++                f"_dummy_req_{i}": n for i, n in enumerate(num_tokens_per_request)
++            }
++            dummy_scheduler_output = SchedulerOutput.make_empty()
++            dummy_scheduler_output.total_num_scheduled_tokens = num_tokens
++            dummy_scheduler_output.num_scheduled_tokens = num_scheduled_tokens
++
++            # Disable any use of KVConnector for dummy runs.
++            self.kv_connector.set_disabled(True)
++
++            # Get the intermediate tensors for the dummy run.
++            intermediate_tensors = None
++            if not self.is_first_pp_rank:
++                assert self.intermediate_tensors is not None
++                intermediate_tensors = self.intermediate_tensors[:num_tokens]
++
++            max_loras = self.lora_config.max_loras if self.lora_config is not None else 0
+         with self.maybe_dummy_run_with_lora(
+             self.lora_config,
+             num_scheduled_tokens=np.array(num_tokens_per_request, dtype=np.int32),
+@@ -992,26 +1002,31 @@
+     @torch.inference_mode()
+     def _dummy_sampler_run(self, hidden_states: torch.Tensor) -> None:
+         num_reqs = hidden_states.shape[0]
+-        logits = self.model.compute_logits(hidden_states)
+-        dummy_input_batch = InputBatch.make_dummy(
+-            num_reqs, num_reqs, self.input_buffers
+-        )
++        with _startup_profile_span("profile_logits"):
++            logits = self.model.compute_logits(hidden_states)
++        with _startup_profile_span("profile_sampler_inputs"):
++            dummy_input_batch = InputBatch.make_dummy(
++                num_reqs, num_reqs, self.input_buffers
++            )
+ 
+         assert self.sampler is not None
+         # Default pass: compiles the kernels the first real step uses (logits in
+         # the model dtype, no per-request processing).
+-        self.sampler(logits, dummy_input_batch)
++        with _startup_profile_span("profile_sampling", sampling_pass="default"):
++            self.sampler(logits, dummy_input_batch)
+         if current_platform.is_cpu():
+             # The CPU worker sizes the KV cache from process RSS, which would
+             # keep the extra pass's buffers, and has no warmup OOM to prevent.
+             return
+         # Warmup-param pass: warmup_kernels (run after the KV cache is sized)
+         # pays for the fp32 logits pipeline, so the profiled peak must too.
+-        warmup_params = SamplingParams.for_sampler_warmup()
+-        for req_idx in range(num_reqs):
+-            self.sampler.add_request(req_idx, warmup_params)
+-        self.sampler.apply_staged_writes()
+-        self.sampler(logits, dummy_input_batch)
++        with _startup_profile_span("profile_sampler_state_prepare"):
++            warmup_params = SamplingParams.for_sampler_warmup()
++            for req_idx in range(num_reqs):
++                self.sampler.add_request(req_idx, warmup_params)
++            self.sampler.apply_staged_writes()
++        with _startup_profile_span("profile_sampling", sampling_pass="warmup_params"):
++            self.sampler(logits, dummy_input_batch)
+ 
+     @torch.inference_mode()
+     def _dummy_pooler_run(self, hidden_states: torch.Tensor) -> None:
+@@ -1020,16 +1035,17 @@
+ 
+     @torch.inference_mode()
+     def profile_run(self, randomize_inputs: bool = False) -> None:
+-        if self.supports_mm_inputs and self.is_first_pp_rank:
+-            mm_config = self.model_config.multimodal_config
+-            if mm_config is not None and not mm_config.skip_mm_profiling:
+-                mm_budget = MultiModalBudget(
+-                    self.vllm_config, self.mm_registry, enable_cache=False
+-                )
+-                dummy_mm_inputs = mm_budget.get_dummy_encoder_profile_inputs()
+-                self.model_state.encoder_runner.profile_encoder_cache(
+-                    dummy_mm_inputs, mm_budget
+-                )
++        with _startup_profile_span("profile_encoder_prepare"):
++            if self.supports_mm_inputs and self.is_first_pp_rank:
++                mm_config = self.model_config.multimodal_config
++                if mm_config is not None and not mm_config.skip_mm_profiling:
++                    mm_budget = MultiModalBudget(
++                        self.vllm_config, self.mm_registry, enable_cache=False
++                    )
++                    dummy_mm_inputs = mm_budget.get_dummy_encoder_profile_inputs()
++                    self.model_state.encoder_runner.profile_encoder_cache(
++                        dummy_mm_inputs, mm_budget
++                    )
+ 
+         hidden_states, sample_hidden_states = self._dummy_run(
+             self.max_num_tokens,
+@@ -1046,10 +1062,12 @@
+             else:
+                 self._dummy_pooler_run(hidden_states)
+ 
+-        torch.accelerator.synchronize()
+-        del hidden_states, sample_hidden_states
+-        self.reset_encoder_cache()
+-        gc.collect()
++        with _startup_profile_span("profile_synchronize"):
++            torch.accelerator.synchronize()
++        with _startup_profile_span("profile_cleanup"):
++            del hidden_states, sample_hidden_states
++            self.reset_encoder_cache()
++            gc.collect()
+ 
+     def reset_mm_cache(self) -> None:
+         if self.encoder_cache is not None:

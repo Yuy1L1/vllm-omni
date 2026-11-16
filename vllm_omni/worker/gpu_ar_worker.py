@@ -14,6 +14,7 @@ from vllm.v1.utils import report_usage_stats
 from vllm.v1.worker.gpu_worker import init_worker_distributed_environment
 from vllm.v1.worker.workspace import init_workspace_manager
 
+from vllm_omni.engine.startup_span import trace_runner_startup, trace_startup
 from vllm_omni.diffusion.data import OmniACK, OmniSleepTask, OmniWakeTask
 from vllm_omni.platforms import current_omni_platform
 from vllm_omni.worker.base import OmniGPUWorkerBase
@@ -136,10 +137,13 @@ class GPUARWorker(OmniWorkerMixin, OmniGPUWorkerBase):
             self.use_v2_model_runner = False
             self.model_runner = self.model_runner_cls(self.vllm_config, self.device)
 
+        trace_runner_startup(self.model_runner)
+
         if self.rank == 0:
             # If usage stat is enabled, collect relevant info.
             report_usage_stats(self.vllm_config)
 
+    @trace_startup("compile_warmup")
     def compile_or_warm_up_model(self):
         # Runs before the upstream warmup so the prefill fused-MoE configs and
         # the seeded-sampling Triton kernel are compiled before vLLM activates

@@ -25,6 +25,7 @@ from vllm_omni.diffusion.data import (
     OmniSleepTask,
     OmniWakeTask,
 )
+from vllm_omni.engine.startup_span import trace_startup
 from vllm_omni.lora.weight_transfer import MergedLoRAIPCWeightTransferEngine
 from vllm_omni.platforms import current_omni_platform
 
@@ -102,6 +103,10 @@ class OmniGPUWorkerBase(GPUWorker):
     for custom trace naming, background gzip, and trace path collection.
     """
 
+    @trace_startup("kv_cache_init", scope="worker_allocation")
+    def initialize_from_config(self, kv_cache_config):
+        return super().initialize_from_config(kv_cache_config)
+
     def _capture_auxiliary_graphs(self) -> None:
         """Let opt-in models warm valid inputs before the worker becomes ready."""
         capture = getattr(self.model_runner.model, "capture_auxiliary_graphs", None)
@@ -146,6 +151,7 @@ class OmniGPUWorkerBase(GPUWorker):
         self._capture_auxiliary_graphs()
         return result
 
+    @trace_startup("model_load")
     def load_model(self, *args, **kwargs):
         weight_transfer = self.vllm_config.weight_transfer_config
         if (
@@ -283,6 +289,7 @@ class OmniGPUWorkerBase(GPUWorker):
             self.profiler.stop()
 
     @torch.inference_mode()
+    @trace_startup("memory_profiling")
     def determine_available_memory(self) -> int:
         """Device-level GPU memory profiling for the KV cache budget.
 

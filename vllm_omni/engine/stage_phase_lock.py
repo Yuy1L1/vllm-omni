@@ -37,6 +37,7 @@ from collections.abc import Iterator
 
 from vllm.logger import init_logger
 
+from vllm_omni.engine.startup_span import startup_span
 from vllm_omni.engine.stage_init_utils import (
     device_init_lock_path,
     open_device_lock_file,
@@ -172,7 +173,8 @@ class DevicePhaseLock:
         if not self._device_ids:
             yield
             return
-        fds = self._acquire(fcntl.LOCK_SH)
+        with startup_span("phase_lock_wait", mode="SH", devices=self._device_ids):
+            fds = self._acquire(fcntl.LOCK_SH)
         try:
             yield
         finally:
@@ -184,7 +186,8 @@ class DevicePhaseLock:
         if not self._device_ids:
             yield
             return
-        fds = self._acquire(fcntl.LOCK_EX)
+        with startup_span("phase_lock_wait", mode="EX", devices=self._device_ids):
+            fds = self._acquire(fcntl.LOCK_EX)
         try:
             yield
         finally:

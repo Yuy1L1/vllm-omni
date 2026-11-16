@@ -17,6 +17,7 @@ from vllm.v1.worker.gpu_worker import (
 )
 from vllm.v1.worker.workspace import init_workspace_manager
 
+from vllm_omni.engine.startup_span import trace_runner_startup, trace_startup
 from vllm_omni.platforms import current_omni_platform
 from vllm_omni.worker.base import OmniGPUWorkerBase
 from vllm_omni.worker.gpu_generation_model_runner import GPUGenerationModelRunner
@@ -113,11 +114,14 @@ class GPUGenerationWorker(OmniWorkerMixin, OmniGPUWorkerBase):
         else:
             self.model_runner = self.model_runner_cls(self.vllm_config, self.device)
 
+        trace_runner_startup(self.model_runner)
+
         if self.rank == 0:
             # If usage stat is enabled, collect relevant info.
             report_usage_stats(self.vllm_config)
 
     @instrument(span_name="Compile/warmup")
+    @trace_startup("compile_warmup")
     def compile_or_warm_up_model(self) -> CompilationTimes:
         """Generation stages have no KV cache or sampler — skip warmup_kernels."""
         if not self.use_v2_model_runner:

@@ -56,6 +56,7 @@ from vllm_omni.distributed.omni_connectors.utils.config import (
     TRANSFER_ENGINE_CONNECTOR_NAMES,
 )
 from vllm_omni.engine.arg_utils import OmniEngineArgs
+from vllm_omni.engine.startup_span import trace_startup
 from vllm_omni.entrypoints.stage_utils import _to_dict, set_stage_devices
 from vllm_omni.entrypoints.utils import filter_dataclass_kwargs
 from vllm_omni.inputs.data import OmniDiffusionSamplingParams, OmniSamplingParams
@@ -1832,6 +1833,7 @@ def device_overlap_group_keys(device_sets: Sequence[frozenset[int] | None]) -> l
     return [key_of[next(iter(devices))] for devices in resolved]
 
 
+@trace_startup("device_lock_wait")
 def acquire_device_locks(
     stage_id: int,
     engine_args_dict: dict[str, Any],

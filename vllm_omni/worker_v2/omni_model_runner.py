@@ -35,6 +35,7 @@ from vllm.v1.worker.gpu.sample.logit_bias import LogitBiasState
 from vllm.v1.worker.gpu.sample.penalties import PenaltiesState
 from vllm.v1.worker.gpu.sample.sampler import Sampler
 
+from vllm_omni.engine.startup_span import profile_detail_span
 from vllm_omni.core.sched.omni_scheduling_coordinator import (
     uses_native_mrv2_data_plane,
 )
@@ -722,257 +723,259 @@ class OmniGPUModelRunner(MRv2PrefixCacheMixin, GPUModelRunner):
                     self._merge_ec_connector_no_forward(scheduler_output, empty_output)
                 )
 
-        num_reqs = len(scheduler_output.num_scheduled_tokens)
-        num_toks = scheduler_output.total_num_scheduled_tokens
-        max_query_len = max(scheduler_output.num_scheduled_tokens.values())
-        batch_req_state, uniform_tok_count = self.gather_batch_req_state(scheduler_output, dummy_run)
-        num_toks, max_query_len = self._adjust_dispatch_token_count(batch_req_state, num_toks, max_query_len)
-        num_active_loras = 0
-        if self.lora_config:
-            req_ids = list(scheduler_output.num_scheduled_tokens.keys())
-            num_active_loras = get_num_active_loras_for_dispatch(
-                self.lora_config,
-                self.lora_state,
-                req_ids,
-                dummy_run,
-            )
-        # Encoder-decoder models: disable compilation when encoder inputs
-        # are scheduled (dynamic cross-attention cache updates).
-        skip_compiled = self.is_encoder_decoder and bool(scheduler_output.scheduled_encoder_inputs)
-        batch_desc, dp_sync = self._dispatch_batch_descriptor(
-            num_reqs=num_reqs,
-            num_toks=num_toks,
-            uniform_tok_count=uniform_tok_count,
-            num_active_loras=num_active_loras,
-            use_eager=is_profile or skip_compiled,
-            max_query_len=max_query_len,
-            allow_skip_drafts=scheduler_output.skip_drafts,
-        )
-
-        if batch_desc.num_tokens == 0:
-            empty_output = self.kv_connector.no_forward(scheduler_output)
-            return self._attach_native_data_plane_signals(
-                self._merge_ec_connector_no_forward(scheduler_output, empty_output)
-            )
-
-        runner_assisted_request = None
-        if (
-            not dummy_run
-            and batch_desc.cg_mode == CUDAGraphMode.NONE
-            and intermediate_tensors is None
-            and batch_req_state is not None
-            and num_reqs > 0
-        ):
-            request_hook = getattr(self.model, "get_runner_assisted_full_attention_metadata_request", None)
-            context_hook = getattr(self.model, "set_runner_assisted_full_attention_metadata_context", None)
-            if callable(request_hook) and callable(context_hook):
-                runner_assisted_request = request_hook(
-                    req_ids=batch_req_state.req_ids,
-                    num_reqs=num_reqs,
-                    num_scheduled_tokens=batch_req_state.num_scheduled_tokens,
-                    num_computed_tokens=self.req_states.num_computed_tokens_np[batch_req_state.idx_mapping_np],
-                    max_num_scheduled_tokens=max_query_len,
-                    num_prompt_tokens=self.req_states.prompt_len.np[batch_req_state.idx_mapping_np],
-                )
-                if runner_assisted_request is not None:
-                    if not isinstance(runner_assisted_request, RunnerAssistedFullAttentionMetadataRequest):
-                        raise TypeError("runner-assisted full attention metadata hook returned an invalid request")
-                    padded_desc = _runner_assisted_batch_descriptor(
-                        batch_desc, runner_assisted_request, num_reqs, self.scheduler_config.max_num_seqs
-                    )
-                    if padded_desc is not None:
-                        # Prepare the padded query locations, slot mappings,
-                        # and block-table rows through the normal InputBatch
-                        # path before requesting FULL attention metadata.
-                        batch_desc = padded_desc
-                    else:
-                        runner_assisted_request = None
-
-        if not dummy_run:
-            assert batch_req_state is not None
-            input_batch = self.prepare_inputs(scheduler_output, batch_req_state, batch_desc, num_active_loras)
-            if runner_assisted_request is not None:
-                # Preserve the uniform decode bound. Mixed graphs instead
-                # need a stable varlen launch layout across packed layouts.
-                query_bound = (
-                    max_query_len
-                    if runner_assisted_request.num_tokens_padded is None
-                    else max(2, runner_assisted_request.num_tokens_padded)
-                )
-                input_batch = replace(input_batch, max_query_len=query_bound)
-            block_tables, slot_mappings = self.prepare_attn(input_batch)
-            self.model_state.preprocess_state(
-                input_batch,
-                block_tables,
-                self.kv_cache_config,
-                self.req_states.num_computed_tokens.gpu,
-            )
-
+        with profile_detail_span("profile_input_prepare"):
+            num_reqs = len(scheduler_output.num_scheduled_tokens)
+            num_toks = scheduler_output.total_num_scheduled_tokens
+            max_query_len = max(scheduler_output.num_scheduled_tokens.values())
+            batch_req_state, uniform_tok_count = self.gather_batch_req_state(scheduler_output, dummy_run)
+            num_toks, max_query_len = self._adjust_dispatch_token_count(batch_req_state, num_toks, max_query_len)
+            num_active_loras = 0
             if self.lora_config:
-                lora_inputs = self.lora_state.make_lora_inputs(
-                    input_batch.req_ids,
-                    input_batch.idx_mapping_np,
-                    input_batch.num_scheduled_tokens,
+                req_ids = list(scheduler_output.num_scheduled_tokens.keys())
+                num_active_loras = get_num_active_loras_for_dispatch(
+                    self.lora_config,
+                    self.lora_state,
+                    req_ids,
+                    dummy_run,
                 )
-                self._set_active_loras(*lora_inputs)
-            # Encode vision and audio before language-model attention metadata.
-            # A long video's ViT FlashAttention workspace and the prefill's FA3
-            # scheduler workspace do not fit together; V1 runs the encoder first.
-            input_ids, inputs_embeds, ec_connector_output = self._prepare_mm_inputs(
-                scheduler_output,
-                input_batch,
-                dummy_run=False,
+            # Encoder-decoder models: disable compilation when encoder inputs
+            # are scheduled (dynamic cross-attention cache updates).
+            skip_compiled = self.is_encoder_decoder and bool(scheduler_output.scheduled_encoder_inputs)
+            batch_desc, dp_sync = self._dispatch_batch_descriptor(
+                num_reqs=num_reqs,
+                num_toks=num_toks,
+                uniform_tok_count=uniform_tok_count,
+                num_active_loras=num_active_loras,
+                use_eager=is_profile or skip_compiled,
+                max_query_len=max_query_len,
+                allow_skip_drafts=scheduler_output.skip_drafts,
             )
-        else:
-            input_batch = self._make_dummy_input_batch(
-                batch_desc.num_reqs or num_reqs,
-                batch_desc.num_tokens,
-                max_query_len=batch_desc.max_query_len,
-                is_padding=not is_profile,
-            )
-            if randomize_inputs:
-                input_batch.input_ids.random_(0, self.vocab_size)
-            if self.pcp_manager is not None:
-                input_batch = self.pcp_manager.prepare_inputs_for_capture_or_profile(input_batch)
-            if not skip_attn_for_dummy_run:
-                block_tables, slot_mappings = self.prepare_dummy_attn(input_batch, valid_dummy_state_slots)
-                if context_len:
-                    set_dummy_context(
-                        input_batch,
-                        self.block_tables,
-                        context_len,
-                        self.kv_cache_config.num_blocks,
-                        self.max_model_len,
-                        input_block_tables=block_tables,
+
+            if batch_desc.num_tokens == 0:
+                empty_output = self.kv_connector.no_forward(scheduler_output)
+                return self._attach_native_data_plane_signals(
+                    self._merge_ec_connector_no_forward(scheduler_output, empty_output)
+                )
+
+            runner_assisted_request = None
+            if (
+                not dummy_run
+                and batch_desc.cg_mode == CUDAGraphMode.NONE
+                and intermediate_tensors is None
+                and batch_req_state is not None
+                and num_reqs > 0
+            ):
+                request_hook = getattr(self.model, "get_runner_assisted_full_attention_metadata_request", None)
+                context_hook = getattr(self.model, "set_runner_assisted_full_attention_metadata_context", None)
+                if callable(request_hook) and callable(context_hook):
+                    runner_assisted_request = request_hook(
+                        req_ids=batch_req_state.req_ids,
+                        num_reqs=num_reqs,
+                        num_scheduled_tokens=batch_req_state.num_scheduled_tokens,
+                        num_computed_tokens=self.req_states.num_computed_tokens_np[batch_req_state.idx_mapping_np],
+                        max_num_scheduled_tokens=max_query_len,
+                        num_prompt_tokens=self.req_states.prompt_len.np[batch_req_state.idx_mapping_np],
                     )
-            else:
-                assert batch_desc.cg_mode != CUDAGraphMode.FULL, (
-                    "Attention metadata is required for FULL CUDA graph dummy runs"
+                    if runner_assisted_request is not None:
+                        if not isinstance(runner_assisted_request, RunnerAssistedFullAttentionMetadataRequest):
+                            raise TypeError("runner-assisted full attention metadata hook returned an invalid request")
+                        padded_desc = _runner_assisted_batch_descriptor(
+                            batch_desc, runner_assisted_request, num_reqs, self.scheduler_config.max_num_seqs
+                        )
+                        if padded_desc is not None:
+                            # Prepare the padded query locations, slot mappings,
+                            # and block-table rows through the normal InputBatch
+                            # path before requesting FULL attention metadata.
+                            batch_desc = padded_desc
+                        else:
+                            runner_assisted_request = None
+
+            if not dummy_run:
+                assert batch_req_state is not None
+                input_batch = self.prepare_inputs(scheduler_output, batch_req_state, batch_desc, num_active_loras)
+                if runner_assisted_request is not None:
+                    # Preserve the uniform decode bound. Mixed graphs instead
+                    # need a stable varlen launch layout across packed layouts.
+                    query_bound = (
+                        max_query_len
+                        if runner_assisted_request.num_tokens_padded is None
+                        else max(2, runner_assisted_request.num_tokens_padded)
+                    )
+                    input_batch = replace(input_batch, max_query_len=query_bound)
+                block_tables, slot_mappings = self.prepare_attn(input_batch)
+                self.model_state.preprocess_state(
+                    input_batch,
+                    block_tables,
+                    self.kv_cache_config,
+                    self.req_states.num_computed_tokens.gpu,
                 )
-                block_tables = None
-                slot_mappings = None
 
-        attn_metadata = None
-        slot_mappings_by_layer = None
-        # Models with their own unified decode graph need FULL attention
-        # metadata even when the v2 runner itself is executing eagerly. Only
-        # pad request/token metadata to the model-owned unified graph bucket.
-        runner_assisted_full_attn = runner_assisted_request is not None
-        runner_assisted_capture = runner_assisted_request is not None and runner_assisted_request.for_cudagraph_capture
-        if not (dummy_run and skip_attn_for_dummy_run):
-            assert slot_mappings is not None
-            slot_mappings_by_layer = build_slot_mappings_by_layer(slot_mappings, self.kv_cache_config)
-            assert block_tables is not None
-            attn_metadata = self.model_state.prepare_attn(
-                input_batch,
-                CUDAGraphMode.FULL if runner_assisted_full_attn else batch_desc.cg_mode,
-                block_tables,
-                slot_mappings,
-                self.attn_groups,
-                self.kv_cache_config,
-                for_capture=(dummy_run and batch_desc.cg_mode == CUDAGraphMode.FULL) or runner_assisted_capture,
-            )
-        if dummy_run:
-            # Real steps encode above, before this metadata exists. Dummy steps
-            # only fill the static embed buffer and do not run the ViT.
-            input_ids, inputs_embeds, ec_connector_output = self._prepare_mm_inputs(
-                scheduler_output,
-                input_batch,
-                dummy_run=True,
-            )
+                if self.lora_config:
+                    lora_inputs = self.lora_state.make_lora_inputs(
+                        input_batch.req_ids,
+                        input_batch.idx_mapping_np,
+                        input_batch.num_scheduled_tokens,
+                    )
+                    self._set_active_loras(*lora_inputs)
+                # Encode vision and audio before language-model attention metadata.
+                # A long video's ViT FlashAttention workspace and the prefill's FA3
+                # scheduler workspace do not fit together; V1 runs the encoder first.
+                input_ids, inputs_embeds, ec_connector_output = self._prepare_mm_inputs(
+                    scheduler_output,
+                    input_batch,
+                    dummy_run=False,
+                )
+            else:
+                input_batch = self._make_dummy_input_batch(
+                    batch_desc.num_reqs or num_reqs,
+                    batch_desc.num_tokens,
+                    max_query_len=batch_desc.max_query_len,
+                    is_padding=not is_profile,
+                )
+                if randomize_inputs:
+                    input_batch.input_ids.random_(0, self.vocab_size)
+                if self.pcp_manager is not None:
+                    input_batch = self.pcp_manager.prepare_inputs_for_capture_or_profile(input_batch)
+                if not skip_attn_for_dummy_run:
+                    block_tables, slot_mappings = self.prepare_dummy_attn(input_batch, valid_dummy_state_slots)
+                    if context_len:
+                        set_dummy_context(
+                            input_batch,
+                            self.block_tables,
+                            context_len,
+                            self.kv_cache_config.num_blocks,
+                            self.max_model_len,
+                            input_block_tables=block_tables,
+                        )
+                else:
+                    assert batch_desc.cg_mode != CUDAGraphMode.FULL, (
+                        "Attention metadata is required for FULL CUDA graph dummy runs"
+                    )
+                    block_tables = None
+                    slot_mappings = None
 
-        model_inputs: dict[str, Any] = {
-            "input_ids": input_ids,
-            "positions": input_batch.positions,
-            "inputs_embeds": inputs_embeds,
-            "intermediate_tensors": intermediate_tensors,
-            **self.model_state.prepare_inputs(input_batch, self.req_states),
-        }
-        self._add_legacy_forward_inputs(model_inputs, input_batch)
-        # ★ PRE-FORWARD: per-request preprocess + batched MTP.
-        # Runs for ALL graph modes (FULL, PIECEWISE, NONE).
-        # For FULL graph: OmniModelState provides a static inputs_embeds
-        # buffer that was captured by the graph.  Preprocess writes
-        # in-place to this buffer, and FULL graph replay reads the
-        # updated values from the same tensor address.
-        if not dummy_run:
-            self.model_state.run_preprocess(
-                input_batch,
-                model_inputs,
-                self.req_states,
-                self._dispatch_mtp_batch_descriptor,
-            )
+            attn_metadata = None
+            slot_mappings_by_layer = None
+            # Models with their own unified decode graph need FULL attention
+            # metadata even when the v2 runner itself is executing eagerly. Only
+            # pad request/token metadata to the model-owned unified graph bucket.
+            runner_assisted_full_attn = runner_assisted_request is not None
+            runner_assisted_capture = runner_assisted_request is not None and runner_assisted_request.for_cudagraph_capture
+            if not (dummy_run and skip_attn_for_dummy_run):
+                assert slot_mappings is not None
+                slot_mappings_by_layer = build_slot_mappings_by_layer(slot_mappings, self.kv_cache_config)
+                assert block_tables is not None
+                attn_metadata = self.model_state.prepare_attn(
+                    input_batch,
+                    CUDAGraphMode.FULL if runner_assisted_full_attn else batch_desc.cg_mode,
+                    block_tables,
+                    slot_mappings,
+                    self.attn_groups,
+                    self.kv_cache_config,
+                    for_capture=(dummy_run and batch_desc.cg_mode == CUDAGraphMode.FULL) or runner_assisted_capture,
+                )
+            if dummy_run:
+                # Real steps encode above, before this metadata exists. Dummy steps
+                # only fill the static embed buffer and do not run the ViT.
+                input_ids, inputs_embeds, ec_connector_output = self._prepare_mm_inputs(
+                    scheduler_output,
+                    input_batch,
+                    dummy_run=True,
+                )
 
-        self.eplb.prepare_forward(self.model_config, input_batch.num_tokens)
+            model_inputs: dict[str, Any] = {
+                "input_ids": input_ids,
+                "positions": input_batch.positions,
+                "inputs_embeds": inputs_embeds,
+                "intermediate_tensors": intermediate_tensors,
+                **self.model_state.prepare_inputs(input_batch, self.req_states),
+            }
+            self._add_legacy_forward_inputs(model_inputs, input_batch)
+            # ★ PRE-FORWARD: per-request preprocess + batched MTP.
+            # Runs for ALL graph modes (FULL, PIECEWISE, NONE).
+            # For FULL graph: OmniModelState provides a static inputs_embeds
+            # buffer that was captured by the graph.  Preprocess writes
+            # in-place to this buffer, and FULL graph replay reads the
+            # updated values from the same tensor address.
+            if not dummy_run:
+                self.model_state.run_preprocess(
+                    input_batch,
+                    model_inputs,
+                    self.req_states,
+                    self._dispatch_mtp_batch_descriptor,
+                )
+
+            self.eplb.prepare_forward(self.model_config, input_batch.num_tokens)
 
         # Target layers a drafter reads (EAGLE-3, DFlash, DSpark). They ride in
         # the forward's tuple output, separate from the Omni auxiliary output.
         draft_aux_hidden_states = None
-        # --- Model forward ---
-        if batch_desc.cg_mode == CUDAGraphMode.FULL:
-            # FULL graph replay.  Preprocess already wrote to the static
-            # inputs_embeds buffer above.
-            assert self.cudagraph_manager is not None
-            self.kv_connector.pre_forward(scheduler_output)
-            replayed = self.cudagraph_manager.run_fullgraph(batch_desc)
-            if self.use_aux_hidden_state_outputs:
-                replayed, draft_aux_hidden_states = replayed
-            self._last_multimodal_outputs = None
-            hidden_states, self._last_aux_output = self._split_fullgraph_output(replayed)
-            if hasattr(self.model, "_last_captured_layers"):
-                self.model._last_captured_layers = self._last_aux_output
-        else:
-            batch_descriptor = BatchDescriptor(
-                num_tokens=input_batch.num_tokens_after_padding,
-                has_lora=self.lora_config is not None,
-                num_active_loras=batch_desc.num_active_loras,
-            )
-            try:
-                if runner_assisted_full_attn:
-                    self.model.set_runner_assisted_full_attention_metadata_context(
-                        enabled=True, num_reqs=input_batch.num_reqs
-                    )
-                with self._forward_context(
-                    attn_metadata,
-                    self.vllm_config,
-                    num_tokens=input_batch.num_tokens_after_padding,
-                    num_actual_tokens=input_batch.num_tokens,
-                    in_profile_run=is_profile,
-                    cudagraph_runtime_mode=CUDAGraphMode.FULL if runner_assisted_full_attn else batch_desc.cg_mode,
-                    num_tokens_across_dp=dp_sync.num_tokens_across_dp if dp_sync is not None else None,
-                    batch_descriptor=batch_descriptor,
-                    slot_mapping=slot_mappings_by_layer,
-                    skip_compiled=skip_compiled,
-                    is_padding=input_batch.is_padding,
-                ):
-                    self.kv_connector.pre_forward(scheduler_output)
-                    if batch_desc.cg_mode == CUDAGraphMode.PIECEWISE:
-                        assert self.cudagraph_manager is not None
-                        model_output = self.cudagraph_manager.run_pw_graph(
-                            self.model,
-                            model_inputs,
-                        )
-                    else:
-                        model_output = self.model(**model_inputs)
-            finally:
-                if runner_assisted_full_attn:
-                    self.model.set_runner_assisted_full_attention_metadata_context(enabled=False)
-
-            # Extract hidden_states from model output.
-            self._last_aux_output = None
-            self._last_multimodal_outputs = None
-            if self.use_aux_hidden_state_outputs:
-                model_output, draft_aux_hidden_states = model_output
-            if isinstance(model_output, OmniOutput):
-                hidden_states = model_output.text_hidden_states
-                if model_output.multimodal_outputs:
-                    self._last_multimodal_outputs = cast(dict[str, Any], model_output.multimodal_outputs)
-            elif isinstance(model_output, tuple) and len(model_output) == 2:
-                hidden_states, self._last_aux_output = model_output
+        with profile_detail_span("profile_model_forward"):
+            # --- Model forward ---
+            if batch_desc.cg_mode == CUDAGraphMode.FULL:
+                # FULL graph replay.  Preprocess already wrote to the static
+                # inputs_embeds buffer above.
+                assert self.cudagraph_manager is not None
+                self.kv_connector.pre_forward(scheduler_output)
+                replayed = self.cudagraph_manager.run_fullgraph(batch_desc)
+                if self.use_aux_hidden_state_outputs:
+                    replayed, draft_aux_hidden_states = replayed
+                self._last_multimodal_outputs = None
+                hidden_states, self._last_aux_output = self._split_fullgraph_output(replayed)
                 if hasattr(self.model, "_last_captured_layers"):
                     self.model._last_captured_layers = self._last_aux_output
             else:
-                hidden_states = model_output
+                batch_descriptor = BatchDescriptor(
+                    num_tokens=input_batch.num_tokens_after_padding,
+                    has_lora=self.lora_config is not None,
+                    num_active_loras=batch_desc.num_active_loras,
+                )
+                try:
+                    if runner_assisted_full_attn:
+                        self.model.set_runner_assisted_full_attention_metadata_context(
+                            enabled=True, num_reqs=input_batch.num_reqs
+                        )
+                    with self._forward_context(
+                        attn_metadata,
+                        self.vllm_config,
+                        num_tokens=input_batch.num_tokens_after_padding,
+                        num_actual_tokens=input_batch.num_tokens,
+                        in_profile_run=is_profile,
+                        cudagraph_runtime_mode=CUDAGraphMode.FULL if runner_assisted_full_attn else batch_desc.cg_mode,
+                        num_tokens_across_dp=dp_sync.num_tokens_across_dp if dp_sync is not None else None,
+                        batch_descriptor=batch_descriptor,
+                        slot_mapping=slot_mappings_by_layer,
+                        skip_compiled=skip_compiled,
+                        is_padding=input_batch.is_padding,
+                    ):
+                        self.kv_connector.pre_forward(scheduler_output)
+                        if batch_desc.cg_mode == CUDAGraphMode.PIECEWISE:
+                            assert self.cudagraph_manager is not None
+                            model_output = self.cudagraph_manager.run_pw_graph(
+                                self.model,
+                                model_inputs,
+                            )
+                        else:
+                            model_output = self.model(**model_inputs)
+                finally:
+                    if runner_assisted_full_attn:
+                        self.model.set_runner_assisted_full_attention_metadata_context(enabled=False)
+
+                # Extract hidden_states from model output.
+                self._last_aux_output = None
+                self._last_multimodal_outputs = None
+                if self.use_aux_hidden_state_outputs:
+                    model_output, draft_aux_hidden_states = model_output
+                if isinstance(model_output, OmniOutput):
+                    hidden_states = model_output.text_hidden_states
+                    if model_output.multimodal_outputs:
+                        self._last_multimodal_outputs = cast(dict[str, Any], model_output.multimodal_outputs)
+                elif isinstance(model_output, tuple) and len(model_output) == 2:
+                    hidden_states, self._last_aux_output = model_output
+                    if hasattr(self.model, "_last_captured_layers"):
+                        self.model._last_captured_layers = self._last_aux_output
+                else:
+                    hidden_states = model_output
         if not dummy_run and isinstance(hidden_states, torch.Tensor):
             self.model_state.run_postprocess(hidden_states, input_batch)
 
