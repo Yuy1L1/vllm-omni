@@ -181,3 +181,52 @@ emit nothing during ordinary inference or later graph-capture warmups.
 See [experiments/README.md](experiments/README.md) for the prepared snapshot and
 the two-commit workflow. Keep installed vLLM/FlashInfer changes as the patches
 in `patches/`; committing the Omni checkout alone cannot capture site-packages.
+
+## Process bootstrap → warm inference → process method safety
+
+`run_startup_experiments.py --out <results>/process-bootstrap-20261116
+--experiment process-bootstrap --repetitions 3`
+performs three default startups without resetting compiler caches. Bootstrap
+milestones are separate JSONL files in each launch's `spans/.../bootstrap/`.
+`launch_id` joins parent `.start()` begin/return with child target, stage
+constructor and the actual upstream `EngineCore.__init__` entry/exit. The
+selected multiprocessing context is recorded rather than changed. Engine-core
+module import start/end measures only that module's import window, not all
+interpreter/unpickle imports before target entry. `start_to_target_s` includes
+those earlier imports. Do not add the nested `.start()` duration to that latency.
+
+`analyze_bootstrap.py <results>/process-bootstrap-20261116` writes `bootstrap_timeline.png` and exports Chrome
+trace process-launch flow links. Those links use `launch_id`; they do not
+pretend to be cross-process `parent_span_id` relationships. Stage-ready events
+remain controller-received log milestones, not exact child emission timestamps.
+The ordinary hierarchy plotter remains compatible with the separate marker files.
+
+After the bootstrap experiment completes, use the same runner with
+`--out <results>/warm-inference-20261116 --experiment warm-inference`. It compares default,
+no-CG and eager sequentially, with the same CustomVoice prompt, seed 42,
+explicit request-level `min_tokens=max_tokens=64`, `ignore_eos=True`, and 30
+requests per mode. Deployment defaults alone are insufficient for this test;
+resolved request parameters and actual output token counts are verified. Exclude
+five warmups and summarize 25 measured requests. Per-request events record
+actual Stage 0 token count (when supplied by stage metrics), returned token
+count, audio sample count, audio validity/hash, prompt hash and end-to-end
+latency. Tokens/s means Stage 0 generated tokens divided by full pipeline
+latency, not isolated GPU decode throughput. Workload equivalence must be
+checked before interpreting latency differences. This is one retained engine
+per mode, not a statistical comparison over independently repeated engines.
+
+After warm inference, run
+`probe_process_methods.py --out <results>/process-method-safety-20261116`. Each method/parent
+scenario runs in an isolated interpreter and starts three children. Compare
+explicit spawn/forkserver contexts, both before and after the parent initializes
+CUDA. No full Omni engine is launched or switched to fork/forkserver. Child
+milestones separate target entry, torch import, Omni import and a finite,
+CPU-reference-checked CUDA matrix operation and CUDA Graph capture/replay.
+Forkserver first-server startup
+is distinguished from reuse. This checks basic import/CUDA compatibility, not
+full-model correctness, NCCL/IPC compatibility or production support. No server
+preload is enabled in this initial comparison.
+
+Analyze the purpose-named result directories with
+`summarize_startup_experiments.py <results> --date 20261116`.
+Each experiment has its own README, console log and provenance folder.

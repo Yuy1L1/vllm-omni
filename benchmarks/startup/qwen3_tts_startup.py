@@ -82,6 +82,7 @@ STAGE_PREFIX = re.compile(r"StageEngineCoreProc_stage(?P<stage>\d+)_replica(?P<r
 STAGE_RUNTIME = re.compile(r"\[StageRuntime\] Stage (?P<stage>\d+)(?: replica (?P<replica>\d+))? initialized")
 
 STAGE_LAUNCH = re.compile(r"Stage-(?P<stage>\d+) set runtime devices")
+STAGE_CLIENT_READY = re.compile(r"stage-(?P<stage>\d+) \[rep-(?P<replica>\d+)\] EngineCore running")
 
 def _duration(pattern: str) -> re.Pattern[str]:
     return re.compile(pattern, re.IGNORECASE)
@@ -173,7 +174,7 @@ def stage_identity(line: str) -> tuple[int | None, int | None]:
     match = STAGE_PREFIX.search(line)
     if match:
         return int(match.group("stage")), int(match.group("replica"))
-    match = STAGE_RUNTIME.search(line) or STAGE_LAUNCH.search(line)
+    match = STAGE_RUNTIME.search(line) or STAGE_CLIENT_READY.search(line) or STAGE_LAUNCH.search(line)
     if match:
         replica = match.groupdict().get("replica")
         return int(match.group("stage")), int(replica) if replica is not None else None
@@ -189,7 +190,7 @@ def classify_line(line: str) -> tuple[str | None, dict[str, Any]]:
         return event, payload
     if STAGE_LAUNCH.search(line):
         return "stage_launch", {}
-    if STAGE_RUNTIME.search(line):
+    if STAGE_RUNTIME.search(line) or STAGE_CLIENT_READY.search(line):
         return "stage_ready", {}
     if "[Omni] Initializing with model" in line or "[OmniEngine] Initializing with model" in line:
         return "omni_init_start", {}
@@ -632,13 +633,72 @@ def child_main(args: argparse.Namespace) -> int:
             prompt = query.inputs
             additional = prompt.get("additional_information", {})
             additional["max_new_tokens"] = [args.max_new_tokens]
+            request_params = None
+            input_fingerprint = None
+            if args.fixed_inference:
+                import copy
+                import hashlib
+
+                input_fingerprint = hashlib.sha256(json.dumps(prompt, sort_keys=True).encode()).hexdigest()
+
+                request_params = copy.deepcopy(omni.default_sampling_params_list)
+                request_params[0].seed = 42
+                request_params[0].max_tokens = args.max_new_tokens
+                request_params[0].min_tokens = args.max_new_tokens
+                request_params[0].ignore_eos = True
+                request_params[0].stop_token_ids = []
+                request_params = omni.resolve_sampling_params_list(request_params)
+                print("STARTUP_BENCH_EVENT " + json.dumps({"event": "fixed_sampling_parameters",
+                      "seed": request_params[0].seed, "min_tokens": request_params[0].min_tokens,
+                      "max_tokens": request_params[0].max_tokens, "ignore_eos": request_params[0].ignore_eos}), flush=True)
             request_setup_s = time.perf_counter() - setup_started
             for index in range(args.requests):
                 request_started = time.perf_counter()
                 # Consume all stage outputs. The benchmark intentionally does
                 # not serialize audio, so this is model/runtime latency only.
-                omni.generate([prompt], use_tqdm=False)
+                if args.fixed_inference:
+                    outputs = omni.generate([prompt], sampling_params_list=request_params, use_tqdm=False)
+                else:
+                    omni.generate([prompt], use_tqdm=False)
                 request_s = time.perf_counter() - request_started
+                workload = {}
+                if args.fixed_inference:
+                    import hashlib
+                    import torch
+
+                    tokens = None
+                    audio_samples = 0
+                    audio_finite = True
+                    audio_hash = hashlib.sha256()
+                    returned_tokens = 0
+                    for output in outputs:
+                        metric = getattr(output, "metrics", {}) or {}
+                        if isinstance(metric, dict):
+                            stage_metrics = metric.get("stage_metrics", {})
+                            talker = stage_metrics.get("0", {})
+                            if talker.get("num_tokens_out") is not None:
+                                tokens = max(tokens or 0, int(talker["num_tokens_out"]))
+                        for completion in getattr(output, "outputs", []):
+                            returned_tokens += len(getattr(completion, "token_ids", []) or [])
+                            mm = getattr(completion, "multimodal_output", {}) or {}
+                            audio = mm.get("audio", [])
+                            tensors = audio if isinstance(audio, list) else [audio]
+                            for tensor in tensors:
+                                if isinstance(tensor, torch.Tensor):
+                                    values = tensor.detach().float().cpu()
+                                    audio_samples += values.numel()
+                                    audio_finite = audio_finite and bool(torch.isfinite(values).all())
+                                    audio_hash.update(values.numpy().tobytes())
+                    workload = {"stage0_output_tokens": tokens, "returned_token_count": returned_tokens,
+                                "audio_samples": audio_samples, "audio_finite": audio_finite,
+                                "audio_sha256": audio_hash.hexdigest(),
+                                "tokens_per_s": tokens / request_s if tokens else None,
+                                "fixed_seed": 42, "requested_tokens": args.max_new_tokens,
+                                "prompt_sha256": input_fingerprint, "prompt_hash_scope": "fixture_before_first_request"}
+                    if not outputs or not audio_samples or not audio_finite:
+                        raise RuntimeError("Fixed inference produced empty or non-finite audio")
+                    if tokens != args.max_new_tokens:
+                        raise RuntimeError(f"Fixed inference token count mismatch: {tokens} != {args.max_new_tokens}")
                 request_times_s.append(round(request_s, 6))
                 print(
                     "STARTUP_BENCH_EVENT "
@@ -648,6 +708,7 @@ def child_main(args: argparse.Namespace) -> int:
                             "request_index": index,
                             "request_kind": "first" if index == 0 else "steady",
                             "duration_s": round(request_s, 6),
+                            **workload,
                         },
                         sort_keys=True,
                     ),
@@ -703,6 +764,8 @@ def parse_args() -> argparse.Namespace:
         help="fixed requests after each startup (first request plus steady-state repeats; 0 disables)",
     )
     parser.add_argument("--max-new-tokens", type=int, default=64, help="fixed output-token cap for each request")
+    parser.add_argument("--fixed-inference", action="store_true",
+                        help="Experiment A: seed 42, fixed min/max tokens, output-length and validity metrics")
     parser.add_argument("--parallel-stage-init", action="store_true")
     parser.add_argument("--keep-going", action="store_true", help="continue after a failed launch")
     parser.add_argument("--expected-gpu", default=None,

@@ -51,6 +51,35 @@ def main():
             "dur": (span["end_ns"] - span["start_ns"]) / 1e3,
             "args": span,
         })
+    bootstrap = []
+    for path in sorted((args.trace_dir / "bootstrap").glob("*.jsonl")):
+        bootstrap.extend(json.loads(line) for line in path.read_text().splitlines() if line.strip())
+    launches = {}
+    for mark in bootstrap:
+        launches.setdefault(mark["launch_id"], {})[mark["event"]] = mark
+        trace.append({"name": mark["event"], "cat": "bootstrap", "ph": "i", "s": "t",
+                      "pid": mark["pid"], "tid": mark["tid"],
+                      "ts": (mark["timestamp_ns"] - origin) / 1e3,
+                      "args": {**mark, **launch}})
+    for launch_id, marks in launches.items():
+        begin, child = marks.get("parent_start_begin"), marks.get("child_target_entry")
+        returned = marks.get("parent_start_return")
+        if begin and returned:
+            trace.append({"name": "process_start_call", "cat": "bootstrap", "ph": "X",
+                          "pid": begin["pid"], "tid": begin["tid"],
+                          "ts": (begin["timestamp_ns"] - origin) / 1e3,
+                          "dur": (returned["timestamp_ns"] - begin["timestamp_ns"]) / 1e3,
+                          "args": {**begin, **launch}})
+        if begin and child:
+            for mark, phase in ((begin, "s"), (child, "f")):
+                flow = {"name": "process_launch", "cat": "bootstrap", "ph": phase,
+                        "id": launch_id, "pid": mark["pid"], "tid": mark["tid"],
+                        "ts": (mark["timestamp_ns"] - origin) / 1e3,
+                        "args": {"launch_id": launch_id, "stage": child["stage"],
+                                 "start_method": child["start_method"]}}
+                if phase == "f":
+                    flow["bp"] = "e"
+                trace.append(flow)
     columns = sorted({key for row in rows for key in row})
     with (args.trace_dir / "spans.csv").open("w") as stream:
         writer = csv.DictWriter(stream, fieldnames=columns)

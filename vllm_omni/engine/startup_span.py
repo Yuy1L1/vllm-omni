@@ -179,3 +179,19 @@ def profile_detail_span(name, **metadata):
         return
     with startup_span(name, **{**context, **metadata}):
         yield
+
+
+def startup_mark(event, **metadata):
+    """Cross-process bootstrap milestones, stored separately from interval spans."""
+    directory = os.environ.get("VLLM_OMNI_STARTUP_TRACE_DIR")
+    if not directory:
+        return
+    timestamp_ns = time.perf_counter_ns()
+    record = {**metadata, "event": event, "timestamp_ns": timestamp_ns,
+              "pid": os.getpid(), "ppid": os.getppid(),
+              "tid": threading.get_native_id(), "hostname": socket.gethostname(),
+              "clock": "perf_counter_ns"}
+    path = Path(directory) / "bootstrap"
+    path.mkdir(parents=True, exist_ok=True)
+    with (path / f"{socket.gethostname()}-{os.getpid()}.jsonl").open("a") as stream:
+        stream.write(json.dumps(record) + "\n")

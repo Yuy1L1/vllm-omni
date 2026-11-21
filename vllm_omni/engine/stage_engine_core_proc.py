@@ -10,6 +10,10 @@ busy loop in a subprocess, communicating with StageEngineCoreClient via ZMQ.
 
 from __future__ import annotations
 
+import time
+
+_module_import_begin_ns = time.perf_counter_ns()
+
 import contextlib
 import math
 import os
@@ -40,8 +44,10 @@ from vllm_omni.engine.stage_init_utils import (
     maybe_apply_cfg_scheduler_patches,
     set_death_signal,
 )
-from vllm_omni.engine.startup_span import trace_startup
+from vllm_omni.engine.startup_span import startup_mark, trace_startup
 from vllm_omni.platforms import current_omni_platform
+
+_module_import_end_ns = time.perf_counter_ns()
 
 logger = init_logger(__name__)
 
@@ -206,6 +212,7 @@ class StageEngineCoreProc(EngineCoreProc):
         omni_replica_id: int = 0,
         omni_parallel_stage_init: bool = False,
         omni_handshake_timeout_s: float | None = None,
+        omni_startup_launch_id: str | None = None,
         **kwargs: Any,
     ) -> None:
         """Launch StageEngineCoreProc busy loop in background process.
@@ -228,6 +235,14 @@ class StageEngineCoreProc(EngineCoreProc):
             later stage only after the earlier stages are ready, which can
             exceed vLLM's fixed 5-minute wait.
         """
+        import multiprocessing
+
+        bootstrap_identity = {"launch_id": omni_startup_launch_id, "stage": omni_stage_id,
+                              "replica": omni_replica_id,
+                              "start_method": multiprocessing.get_start_method(),
+                              "module_import_begin_ns": _module_import_begin_ns,
+                              "module_import_end_ns": _module_import_end_ns}
+        startup_mark("child_target_entry", **bootstrap_identity)
         signal_callback: SignalCallback | None = None
         vllm_config: VllmConfig = kwargs["vllm_config"]
         if logging_config := getattr(vllm_config, "logging_config", None):
@@ -307,11 +322,25 @@ class StageEngineCoreProc(EngineCoreProc):
                     kwargs["executor_class"], omni_stage_id, omni_replica_id
                 )
 
+            if os.environ.get("VLLM_OMNI_STARTUP_TRACE_DIR"):
+                original_core_init = _vllm_engine_core_module.EngineCore.__init__
+
+                def measured_core_init(instance, *core_args, **core_kwargs):
+                    startup_mark("vllm_engine_core_entry", **bootstrap_identity)
+                    try:
+                        return original_core_init(instance, *core_args, **core_kwargs)
+                    finally:
+                        startup_mark("vllm_engine_core_exit", **bootstrap_identity)
+
+                _vllm_engine_core_module.EngineCore.__init__ = measured_core_init
+            startup_mark("stage_constructor_entry", **bootstrap_identity)
             engine_core = StageEngineCoreProc(
                 *args,
                 engine_index=dp_rank,
                 **kwargs,
             )
+
+            startup_mark("stage_constructor_done", **bootstrap_identity)
 
             # Each subprocess corresponds to exactly one omni replica with
             # its own OmniMasterServer allocation, so the heartbeat client

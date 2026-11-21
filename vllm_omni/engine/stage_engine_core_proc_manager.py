@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import contextlib
 import threading
+import uuid
 import weakref
 from multiprocessing.process import BaseProcess
 from multiprocessing.queues import Queue
@@ -35,6 +36,7 @@ from vllm.v1.executor import Executor, UniProcExecutor
 from vllm.v1.utils import shutdown
 
 from vllm_omni.engine.stage_engine_core_proc import StageEngineCoreProc
+from vllm_omni.engine.startup_span import startup_mark
 
 logger = init_logger(__name__)
 
@@ -125,6 +127,7 @@ class StageEngineCoreProcManager(CoreEngineProcManager):
             # pre-allocated a contiguous block starting at ``omni_replica_base_id``.
             omni_replica_id = omni_replica_base_id + index
 
+            launch_id = uuid.uuid4().hex
             local_dp_ranks.append(local_index)
             self.processes.append(
                 context.Process(
@@ -138,6 +141,7 @@ class StageEngineCoreProcManager(CoreEngineProcManager):
                         "dp_rank": global_index,
                         "local_dp_rank": local_index,
                         "omni_replica_id": omni_replica_id,
+                        "omni_startup_launch_id": launch_id,
                     },
                 )
             )
@@ -167,7 +171,12 @@ class StageEngineCoreProcManager(CoreEngineProcManager):
                         process_kind="worker" if issubclass(executor_class, UniProcExecutor) else "EngineCore",
                     ),
                 ):
+                    identity = {"launch_id": proc._kwargs["omni_startup_launch_id"],
+                                "stage": int(omni_stage_id), "replica": proc._kwargs["omni_replica_id"],
+                                "start_method": context.get_start_method(), "process_name": proc.name}
+                    startup_mark("parent_start_begin", **identity)
                     proc.start()
+                    startup_mark("parent_start_return", child_pid=proc.pid, **identity)
         finally:
             if self.finished_procs():
                 self.shutdown()
